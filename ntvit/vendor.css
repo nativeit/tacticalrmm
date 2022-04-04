@@ -37161,11 +37161,11 @@ body.desktop .q-toggle--dense:not(.disabled):hover .q-toggle__thumb:before {
 .q-toolbar__title:before {
   font-family: Oswald;
   visibility: visible;
-  content: "NATIVE RMM";
+  content: "NATIVE";
   flex: 1 1 0%;
   font-size: 21px;
   font-weight: 600;
-  letter-spacing: 0.15em;
+  letter-spacing: 0.12em;
   max-width: 100%;
   min-width: 1px;
   padding: 0 12px;
