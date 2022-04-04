@@ -37157,7 +37157,7 @@ body.desktop .q-toggle--dense:not(.disabled):hover .q-toggle__thumb:before {
   display: none;
 }
 
-.q-toolbar__title:before {
+.q-toolbar__title:after {
   content: NATIVE IT;
   flex: 1 1 0%;
   font-size: 21px;
