@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 SCRIPT_VERSION="19"
-SCRIPT_URL='https://raw.githubusercontent.com/amidaware/tacticalrmm/master/backup.sh'
+SCRIPT_URL='https://raw.githubusercontent.com/nativeit/tacticalrmm/master/backup.sh'
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -31,9 +31,9 @@ POSTGRES_USER=$(grep -w USER /rmm/api/tacticalrmm/tacticalrmm/local_settings.py 
 POSTGRES_PW=$(grep -w PASSWORD /rmm/api/tacticalrmm/tacticalrmm/local_settings.py | sed 's/^.*: //' | sed 's/.//' | sed -r 's/.{2}$//')
 
 
-if [ ! -d /rmmbackups ]; then
-    sudo mkdir /rmmbackups
-    sudo chown ${USER}:${USER} /rmmbackups
+if [ ! -d /mnt/b2-ntvit/rmmbackups ]; then
+    sudo mkdir /mnt/b2-ntvit/rmmbackups
+    sudo chown ${USER}:${USER} /mnt/b2-ntvit/rmmbackups
 fi
 
 if [ -d /meshcentral/meshcentral-backup ]; then
@@ -76,8 +76,8 @@ fi
 cat /rmm/api/tacticalrmm/tacticalrmm/private/log/django_debug.log | gzip -9 > ${tmp_dir}/rmm/debug.log.gz
 cp /rmm/api/tacticalrmm/tacticalrmm/local_settings.py ${tmp_dir}/rmm/
 
-tar -cf /rmmbackups/rmm-backup-${dt_now}.tar -C ${tmp_dir} .
+tar -cf /mnt/b2-ntvit/rmmbackups/rmm-backup-${dt_now}.tar -C ${tmp_dir} .
 
 rm -rf ${tmp_dir}
 
-echo -ne "${GREEN}Backup saved to /rmmbackups/rmm-backup-${dt_now}.tar${NC}\n"
+echo -ne "${GREEN}Backup saved to /mnt/b2-ntvit/rmmbackups/rmm-backup-${dt_now}.tar${NC}\n"
