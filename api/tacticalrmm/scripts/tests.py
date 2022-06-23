@@ -1,14 +1,14 @@
-import hashlib
-import hmac
-import json
-import os
-from pathlib import Path
 from unittest.mock import patch
 
-from django.conf import settings
 from django.test import override_settings
 from model_bakery import baker
 
+from tacticalrmm.constants import (
+    CustomFieldModel,
+    CustomFieldType,
+    ScriptShell,
+    ScriptType,
+)
 from tacticalrmm.test import TacticalTestCase
 
 from .models import Script, ScriptSnippet
@@ -31,7 +31,7 @@ class TestScriptViews(TacticalTestCase):
         serializer = ScriptTableSerializer(scripts, many=True)
         resp = self.client.get(url, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(serializer.data, resp.data)  # type: ignore
+        self.assertEqual(serializer.data, resp.data)
 
         self.check_not_authenticated("get", url)
 
@@ -42,7 +42,7 @@ class TestScriptViews(TacticalTestCase):
         data = {
             "name": "Name",
             "description": "Description",
-            "shell": "powershell",
+            "shell": ScriptShell.POWERSHELL,
             "category": "New",
             "script_body": "Test Script",
             "default_timeout": 99,
@@ -86,7 +86,7 @@ class TestScriptViews(TacticalTestCase):
         resp = self.client.put(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
         script = Script.objects.get(pk=script.pk)
-        self.assertEquals(script.description, "Description Change")
+        self.assertEqual(script.description, "Description Change")
 
         # correct_hash = hmac.new(
         #     settings.SECRET_KEY.encode(), data["script_body"].encode(), hashlib.sha256
@@ -99,7 +99,9 @@ class TestScriptViews(TacticalTestCase):
             "description": "New Desc",
             "script_body": "aasdfdsf",
         }  # Test
-        builtin_script = baker.make_recipe("scripts.script", script_type="builtin")
+        builtin_script = baker.make_recipe(
+            "scripts.script", script_type=ScriptType.BUILT_IN
+        )
 
         resp = self.client.put(f"/scripts/{builtin_script.pk}/", data, format="json")
         self.assertEqual(resp.status_code, 400)
@@ -125,11 +127,11 @@ class TestScriptViews(TacticalTestCase):
         self.assertEqual(resp.status_code, 404)
 
         script = baker.make("scripts.Script")
-        url = f"/scripts/{script.pk}/"  # type: ignore
+        url = f"/scripts/{script.pk}/"
         serializer = ScriptSerializer(script)
         resp = self.client.get(url, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(serializer.data, resp.data)  # type: ignore
+        self.assertEqual(serializer.data, resp.data)
 
         self.check_not_authenticated("get", url)
 
@@ -142,12 +144,12 @@ class TestScriptViews(TacticalTestCase):
             "code": "some_code",
             "timeout": 90,
             "args": [],
-            "shell": "powershell",
+            "shell": ScriptShell.POWERSHELL,
         }
 
         resp = self.client.post(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data, "return value")  # type: ignore
+        self.assertEqual(resp.data, "return value")
 
         self.check_not_authenticated("post", url)
 
@@ -165,7 +167,7 @@ class TestScriptViews(TacticalTestCase):
         self.assertFalse(Script.objects.filter(pk=script.pk).exists())
 
         # test delete community script
-        script = baker.make_recipe("scripts.script", script_type="builtin")
+        script = baker.make_recipe("scripts.script", script_type=ScriptType.BUILT_IN)
         url = f"/scripts/{script.pk}/"
         resp = self.client.delete(url, format="json")
         self.assertEqual(resp.status_code, 400)
@@ -181,33 +183,41 @@ class TestScriptViews(TacticalTestCase):
 
         # test powershell file
         script = baker.make(
-            "scripts.Script", script_body="Test Script Body", shell="powershell"
+            "scripts.Script",
+            script_body="Test Script Body",
+            shell=ScriptShell.POWERSHELL,
         )
-        url = f"/scripts/{script.pk}/download/"  # type: ignore
+        url = f"/scripts/{script.pk}/download/"
 
         resp = self.client.get(url, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data, {"filename": f"{script.name}.ps1", "code": "Test Script Body"})  # type: ignore
+        self.assertEqual(
+            resp.data, {"filename": f"{script.name}.ps1", "code": "Test Script Body"}
+        )
 
         # test batch file
         script = baker.make(
-            "scripts.Script", script_body="Test Script Body", shell="cmd"
+            "scripts.Script", script_body="Test Script Body", shell=ScriptShell.CMD
         )
-        url = f"/scripts/{script.pk}/download/"  # type: ignore
+        url = f"/scripts/{script.pk}/download/"
 
         resp = self.client.get(url, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data, {"filename": f"{script.name}.bat", "code": "Test Script Body"})  # type: ignore
+        self.assertEqual(
+            resp.data, {"filename": f"{script.name}.bat", "code": "Test Script Body"}
+        )
 
         # test python file
         script = baker.make(
-            "scripts.Script", script_body="Test Script Body", shell="python"
+            "scripts.Script", script_body="Test Script Body", shell=ScriptShell.PYTHON
         )
-        url = f"/scripts/{script.pk}/download/"  # type: ignore
+        url = f"/scripts/{script.pk}/download/"
 
         resp = self.client.get(url, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data, {"filename": f"{script.name}.py", "code": "Test Script Body"})  # type: ignore
+        self.assertEqual(
+            resp.data, {"filename": f"{script.name}.py", "code": "Test Script Body"}
+        )
 
         self.check_not_authenticated("get", url)
 
@@ -228,7 +238,7 @@ class TestScriptViews(TacticalTestCase):
                 f"-Client '{agent.client.name}'",
                 f"-Site '{agent.site.name}'",
             ],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
     def test_script_arg_replacement_custom_field(self):
@@ -236,8 +246,8 @@ class TestScriptViews(TacticalTestCase):
         field = baker.make(
             "core.CustomField",
             name="Test Field",
-            model="agent",
-            type="text",
+            model=CustomFieldModel.AGENT,
+            type=CustomFieldType.TEXT,
             default_value_string="DEFAULT",
         )
 
@@ -246,7 +256,7 @@ class TestScriptViews(TacticalTestCase):
         # test default value
         self.assertEqual(
             ["-Parameter", "-Another 'DEFAULT'"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
         # test with set value
@@ -258,7 +268,7 @@ class TestScriptViews(TacticalTestCase):
         )
         self.assertEqual(
             ["-Parameter", "-Another 'CUSTOM VALUE'"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
     def test_script_arg_replacement_client_custom_fields(self):
@@ -266,8 +276,8 @@ class TestScriptViews(TacticalTestCase):
         field = baker.make(
             "core.CustomField",
             name="Test Field",
-            model="client",
-            type="text",
+            model=CustomFieldModel.CLIENT,
+            type=CustomFieldType.TEXT,
             default_value_string="DEFAULT",
         )
 
@@ -276,7 +286,7 @@ class TestScriptViews(TacticalTestCase):
         # test default value
         self.assertEqual(
             ["-Parameter", "-Another 'DEFAULT'"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
         # test with set value
@@ -288,7 +298,7 @@ class TestScriptViews(TacticalTestCase):
         )
         self.assertEqual(
             ["-Parameter", "-Another 'CUSTOM VALUE'"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
     def test_script_arg_replacement_site_custom_fields(self):
@@ -296,8 +306,8 @@ class TestScriptViews(TacticalTestCase):
         field = baker.make(
             "core.CustomField",
             name="Test Field",
-            model="site",
-            type="text",
+            model=CustomFieldModel.SITE,
+            type=CustomFieldType.TEXT,
             default_value_string="DEFAULT",
         )
 
@@ -306,7 +316,7 @@ class TestScriptViews(TacticalTestCase):
         # test default value
         self.assertEqual(
             ["-Parameter", "-Another 'DEFAULT'"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
         # test with set value
@@ -318,25 +328,25 @@ class TestScriptViews(TacticalTestCase):
         )
         self.assertEqual(
             ["-Parameter", "-Another 'CUSTOM VALUE'"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
         # test with set but empty field value
-        value.string_value = ""  # type: ignore
-        value.save()  # type: ignore
+        value.string_value = ""
+        value.save()
 
         self.assertEqual(
             ["-Parameter", "-Another 'DEFAULT'"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
         # test blank default and value
-        field.default_value_string = ""  # type: ignore
-        field.save()  # type: ignore
+        field.default_value_string = ""
+        field.save()
 
         self.assertEqual(
             ["-Parameter", "-Another ''"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
     def test_script_arg_replacement_array_fields(self):
@@ -344,8 +354,8 @@ class TestScriptViews(TacticalTestCase):
         field = baker.make(
             "core.CustomField",
             name="Test Field",
-            model="agent",
-            type="multiple",
+            model=CustomFieldModel.AGENT,
+            type=CustomFieldType.MULTIPLE,
             default_values_multiple=["this", "is", "an", "array"],
         )
 
@@ -354,7 +364,7 @@ class TestScriptViews(TacticalTestCase):
         # test default value
         self.assertEqual(
             ["-Parameter", "-Another 'this,is,an,array'"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
         # test with set value and python shell
@@ -366,7 +376,7 @@ class TestScriptViews(TacticalTestCase):
         )
         self.assertEqual(
             ["-Parameter", "-Another 'this,is,new'"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
     def test_script_arg_replacement_boolean_fields(self):
@@ -374,8 +384,8 @@ class TestScriptViews(TacticalTestCase):
         field = baker.make(
             "core.CustomField",
             name="Test Field",
-            model="agent",
-            type="checkbox",
+            model=CustomFieldModel.AGENT,
+            type=CustomFieldType.CHECKBOX,
             default_value_bool=True,
         )
 
@@ -384,7 +394,7 @@ class TestScriptViews(TacticalTestCase):
         # test default value with python
         self.assertEqual(
             ["-Parameter", "-Another 1"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
         # test with set value and python shell
@@ -396,28 +406,32 @@ class TestScriptViews(TacticalTestCase):
         )
         self.assertEqual(
             ["-Parameter", "-Another 0"],
-            Script.parse_script_args(agent=agent, shell="python", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.PYTHON, args=args),
         )
 
         # test with set value and cmd shell
         self.assertEqual(
             ["-Parameter", "-Another 0"],
-            Script.parse_script_args(agent=agent, shell="cmd", args=args),
+            Script.parse_script_args(agent=agent, shell=ScriptShell.CMD, args=args),
         )
 
         # test with set value and powershell
         self.assertEqual(
             ["-Parameter", "-Another $False"],
-            Script.parse_script_args(agent=agent, shell="powershell", args=args),
+            Script.parse_script_args(
+                agent=agent, shell=ScriptShell.POWERSHELL, args=args
+            ),
         )
 
         # test with True value powershell
-        custom.bool_value = True  # type: ignore
-        custom.save()  # type: ignore
+        custom.bool_value = True
+        custom.save()
 
         self.assertEqual(
             ["-Parameter", "-Another $True"],
-            Script.parse_script_args(agent=agent, shell="powershell", args=args),
+            Script.parse_script_args(
+                agent=agent, shell=ScriptShell.POWERSHELL, args=args
+            ),
         )
 
 
@@ -433,7 +447,7 @@ class TestScriptSnippetViews(TacticalTestCase):
         serializer = ScriptSnippetSerializer(snippets, many=True)
         resp = self.client.get(url, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(serializer.data, resp.data)  # type: ignore
+        self.assertEqual(serializer.data, resp.data)
 
         self.check_not_authenticated("get", url)
 
@@ -443,7 +457,7 @@ class TestScriptSnippetViews(TacticalTestCase):
         data = {
             "name": "Name",
             "description": "Description",
-            "shell": "powershell",
+            "shell": ScriptShell.POWERSHELL,
             "code": "Test",
         }
 
@@ -460,14 +474,14 @@ class TestScriptSnippetViews(TacticalTestCase):
 
         # make a userdefined script
         snippet = baker.make("scripts.ScriptSnippet", name="Test")
-        url = f"/scripts/snippets/{snippet.pk}/"  # type: ignore
+        url = f"/scripts/snippets/{snippet.pk}/"
 
-        data = {"name": "New Name"}  # type: ignore
+        data = {"name": "New Name"}
 
         resp = self.client.put(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
-        snippet = ScriptSnippet.objects.get(pk=snippet.pk)  # type: ignore
-        self.assertEquals(snippet.name, "New Name")
+        snippet = ScriptSnippet.objects.get(pk=snippet.pk)
+        self.assertEqual(snippet.name, "New Name")
 
         self.check_not_authenticated("put", url)
 
@@ -477,11 +491,11 @@ class TestScriptSnippetViews(TacticalTestCase):
         self.assertEqual(resp.status_code, 404)
 
         snippet = baker.make("scripts.ScriptSnippet")
-        url = f"/scripts/snippets/{snippet.pk}/"  # type: ignore
+        url = f"/scripts/snippets/{snippet.pk}/"
         serializer = ScriptSnippetSerializer(snippet)
         resp = self.client.get(url, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(serializer.data, resp.data)  # type: ignore
+        self.assertEqual(serializer.data, resp.data)
 
         self.check_not_authenticated("get", url)
 
@@ -492,11 +506,11 @@ class TestScriptSnippetViews(TacticalTestCase):
 
         # test delete script snippet
         snippet = baker.make("scripts.ScriptSnippet")
-        url = f"/scripts/snippets/{snippet.pk}/"  # type: ignore
+        url = f"/scripts/snippets/{snippet.pk}/"
         resp = self.client.delete(url, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        self.assertFalse(ScriptSnippet.objects.filter(pk=snippet.pk).exists())  # type: ignore
+        self.assertFalse(ScriptSnippet.objects.filter(pk=snippet.pk).exists())
 
         self.check_not_authenticated("delete", url)
 

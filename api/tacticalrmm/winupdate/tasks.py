@@ -3,16 +3,17 @@ import datetime as dt
 import time
 
 import pytz
-from agents.models import Agent
 from django.utils import timezone as djangotime
-from logs.models import DebugLog
 from packaging import version as pyver
 
+from agents.models import Agent
+from logs.models import DebugLog
 from tacticalrmm.celery import app
+from tacticalrmm.constants import AGENT_STATUS_ONLINE, DebugLogType
 
 
 @app.task
-def auto_approve_updates_task():
+def auto_approve_updates_task() -> None:
     # scheduled task that checks and approves updates daily
 
     agents = Agent.objects.only(
@@ -28,38 +29,21 @@ def auto_approve_updates_task():
     online = [
         i
         for i in agents
-        if i.status == "online" and pyver.parse(i.version) >= pyver.parse("1.3.0")
+        if i.status == AGENT_STATUS_ONLINE
+        and pyver.parse(i.version) >= pyver.parse("1.3.0")
     ]
 
     chunks = (online[i : i + 40] for i in range(0, len(online), 40))
     for chunk in chunks:
         for agent in chunk:
             asyncio.run(agent.nats_cmd({"func": "getwinupdates"}, wait=False))
-            time.sleep(0.05)
-        time.sleep(15)
+        time.sleep(1)
 
 
 @app.task
-def check_agent_update_schedule_task():
+def check_agent_update_schedule_task() -> None:
     # scheduled task that installs updates on agents if enabled
-    agents = Agent.objects.only(
-        "pk",
-        "agent_id",
-        "version",
-        "last_seen",
-        "overdue_time",
-        "offline_time",
-        "has_patches_pending",
-    )
-    online = [
-        i
-        for i in agents
-        if pyver.parse(i.version) >= pyver.parse("1.3.0")
-        and i.has_patches_pending
-        and i.status == "online"
-    ]
-
-    for agent in online:
+    for agent in Agent.online_agents(min_version="1.3.0"):
         agent.delete_superseded_updates()
         install = False
         patch_policy = agent.get_patch_policy()
@@ -119,7 +103,7 @@ def check_agent_update_schedule_task():
                 # initiate update on agent asynchronously and don't worry about ret code
                 DebugLog.info(
                     agent=agent,
-                    log_type="windows_updates",
+                    log_type=DebugLogType.WIN_UPDATES,
                     message=f"Installing windows updates on {agent.hostname}",
                 )
                 nats_data = {
@@ -148,8 +132,7 @@ def bulk_install_updates_task(pks: list[int]) -> None:
                 "guids": agent.get_approved_update_guids(),
             }
             asyncio.run(agent.nats_cmd(nats_data, wait=False))
-            time.sleep(0.05)
-        time.sleep(15)
+        time.sleep(1)
 
 
 @app.task
@@ -161,5 +144,4 @@ def bulk_check_for_updates_task(pks: list[int]) -> None:
         for agent in chunk:
             agent.delete_superseded_updates()
             asyncio.run(agent.nats_cmd({"func": "getwinupdates"}, wait=False))
-            time.sleep(0.05)
-        time.sleep(15)
+        time.sleep(1)

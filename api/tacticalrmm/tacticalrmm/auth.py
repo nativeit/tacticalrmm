@@ -1,11 +1,12 @@
-from accounts.models import APIKey
 from django.utils import timezone as djangotime
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from rest_framework import exceptions
 from rest_framework.authentication import HTTP_HEADER_ENCODING, BaseAuthentication
 
+from accounts.models import APIKey
 
-def get_authorization_header(request):
+
+def get_authorization_header(request) -> str:
     """
     Return request's 'Authorization:' header, as a bytestring.
 
@@ -38,7 +39,7 @@ class APIAuthentication(BaseAuthentication):
             return None
 
         try:
-            apikey = auth.decode()
+            apikey = auth.decode()  # type: ignore
         except UnicodeError:
             msg = _(
                 "Invalid token header. Token string should not contain invalid characters."

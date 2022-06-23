@@ -60,6 +60,8 @@ DEBUG = True
 
 DOCKER_BUILD = True
 
+SWAGGER_ENABLED = True
+
 CERT_FILE = '${CERT_PUB_PATH}'
 KEY_FILE = '${CERT_PRIV_PATH}'
 
@@ -94,6 +96,7 @@ EOF
   echo "${localvars}" > ${WORKSPACE_DIR}/api/tacticalrmm/tacticalrmm/local_settings.py
 
   # run migrations and init scripts
+  "${VIRTUAL_ENV}"/bin/python manage.py pre_update_tasks
   "${VIRTUAL_ENV}"/bin/python manage.py migrate --no-input
   "${VIRTUAL_ENV}"/bin/python manage.py collectstatic --no-input
   "${VIRTUAL_ENV}"/bin/python manage.py initial_db_setup
@@ -143,7 +146,7 @@ if [ "$1" = 'tactical-init-dev' ]; then
   webenv="$(cat << EOF
 PROD_URL = "${HTTP_PROTOCOL}://${API_HOST}"
 DEV_URL = "${HTTP_PROTOCOL}://${API_HOST}"
-APP_URL = "https://${APP_HOST}"
+DEV_PORT = ${APP_PORT}
 DOCKER_BUILD = 1
 EOF
 )"

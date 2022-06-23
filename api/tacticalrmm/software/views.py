@@ -1,15 +1,16 @@
 import asyncio
 from typing import Any
 
-from agents.models import Agent
 from django.shortcuts import get_object_or_404
-from logs.models import PendingAction
 from rest_framework.decorators import api_view
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tacticalrmm.utils import notify_error
+from agents.models import Agent
+from logs.models import PendingAction
+from tacticalrmm.constants import PAAction
+from tacticalrmm.helpers import notify_error
 
 from .models import ChocoSoftware, InstalledSoftware
 from .permissions import SoftwarePerms
@@ -18,7 +19,11 @@ from .serializers import InstalledSoftwareSerializer
 
 @api_view(["GET"])
 def chocos(request):
-    return Response(ChocoSoftware.objects.last().chocos)
+    chocos = ChocoSoftware.objects.last()
+    if not chocos:
+        return Response({})
+    else:
+        return Response(chocos.chocos)
 
 
 class GetSoftware(APIView):
@@ -35,17 +40,20 @@ class GetSoftware(APIView):
             except Exception:
                 return Response([])
         else:
-            software = InstalledSoftware.objects.filter_by_role(request.user)
+            software = InstalledSoftware.objects.filter_by_role(request.user)  # type: ignore
             return Response(InstalledSoftwareSerializer(software, many=True).data)
 
     # software install
     def post(self, request, agent_id):
         agent = get_object_or_404(Agent, agent_id=agent_id)
+        if agent.is_posix:
+            return notify_error(f"Not available for {agent.plat}")
+
         name = request.data["name"]
 
         action = PendingAction.objects.create(
             agent=agent,
-            action_type="chocoinstall",
+            action_type=PAAction.CHOCO_INSTALL,
             details={"name": name, "output": None, "installed": False},
         )
 
@@ -67,6 +75,8 @@ class GetSoftware(APIView):
     # refresh software list
     def put(self, request, agent_id):
         agent = get_object_or_404(Agent, agent_id=agent_id)
+        if agent.is_posix:
+            return notify_error(f"Not available for {agent.plat}")
 
         r: Any = asyncio.run(agent.nats_cmd({"func": "softwarelist"}, timeout=15))
         if r == "timeout" or r == "natsdown":

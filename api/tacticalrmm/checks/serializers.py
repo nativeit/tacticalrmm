@@ -1,11 +1,12 @@
-import pytz
 import validators as _v
-from autotasks.models import AutomatedTask
 from rest_framework import serializers
+
+from autotasks.models import AutomatedTask
 from scripts.models import Script
 from scripts.serializers import ScriptCheckSerializer
+from tacticalrmm.constants import CheckType
 
-from .models import Check, CheckHistory
+from .models import Check, CheckHistory, CheckResult
 
 
 class AssignedTaskField(serializers.ModelSerializer):
@@ -14,13 +15,25 @@ class AssignedTaskField(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class CheckResultSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CheckResult
+        fields = "__all__"
+
+
 class CheckSerializer(serializers.ModelSerializer):
 
     readable_desc = serializers.ReadOnlyField()
-    assigned_task = serializers.SerializerMethodField()
-    last_run = serializers.ReadOnlyField(source="last_run_as_timezone")
-    history_info = serializers.ReadOnlyField()
+    assignedtasks = AssignedTaskField(many=True, read_only=True)
     alert_template = serializers.SerializerMethodField()
+    check_result = serializers.SerializerMethodField()
+
+    def get_check_result(self, obj):
+        return (
+            CheckResultSerializer(obj.check_result).data
+            if isinstance(obj.check_result, CheckResult)
+            else {}
+        )
 
     def get_alert_template(self, obj):
         if obj.agent:
@@ -37,15 +50,6 @@ class CheckSerializer(serializers.ModelSerializer):
                 "always_text": alert_template.check_always_text,
                 "always_alert": alert_template.check_always_alert,
             }
-
-    ## Change to return only array of tasks after 9/25/2020
-    def get_assigned_task(self, obj):
-        if obj.assignedtask.exists():
-            tasks = obj.assignedtask.all()
-            if len(tasks) == 1:
-                return AssignedTaskField(tasks[0]).data
-            else:
-                return AssignedTaskField(tasks, many=True).data
 
     class Meta:
         model = Check
@@ -65,12 +69,10 @@ class CheckSerializer(serializers.ModelSerializer):
 
         # disk checks
         # make sure no duplicate diskchecks exist for an agent/policy
-        if check_type == "diskspace":
+        if check_type == CheckType.DISK_SPACE:
             if not self.instance:  # only on create
-                checks = (
-                    Check.objects.filter(**filter)
-                    .filter(check_type="diskspace")
-                    .exclude(managed_by_policy=True)
+                checks = Check.objects.filter(**filter).filter(
+                    check_type=CheckType.DISK_SPACE
                 )
                 for check in checks:
                     if val["disk"] in check.disk:
@@ -93,7 +95,7 @@ class CheckSerializer(serializers.ModelSerializer):
                 )
 
         # ping checks
-        if check_type == "ping":
+        if check_type == CheckType.PING:
             if (
                 not _v.ipv4(val["ip"])
                 and not _v.ipv6(val["ip"])
@@ -103,12 +105,8 @@ class CheckSerializer(serializers.ModelSerializer):
                     "Please enter a valid IP address or domain name"
                 )
 
-        if check_type == "cpuload" and not self.instance:
-            if (
-                Check.objects.filter(**filter, check_type="cpuload")
-                .exclude(managed_by_policy=True)
-                .exists()
-            ):
+        if check_type == CheckType.CPU_LOAD and not self.instance:
+            if Check.objects.filter(**filter, check_type=CheckType.CPU_LOAD).exists():
                 raise serializers.ValidationError(
                     "A cpuload check for this agent already exists"
                 )
@@ -127,12 +125,8 @@ class CheckSerializer(serializers.ModelSerializer):
                     f"Warning threshold must be less than Error Threshold"
                 )
 
-        if check_type == "memory" and not self.instance:
-            if (
-                Check.objects.filter(**filter, check_type="memory")
-                .exclude(managed_by_policy=True)
-                .exists()
-            ):
+        if check_type == CheckType.MEMORY and not self.instance:
+            if Check.objects.filter(**filter, check_type=CheckType.MEMORY).exists():
                 raise serializers.ValidationError(
                     "A memory check for this agent already exists"
                 )
@@ -166,59 +160,34 @@ class CheckRunnerGetSerializer(serializers.ModelSerializer):
     script_args = serializers.SerializerMethodField()
 
     def get_script_args(self, obj):
-        if obj.check_type != "script":
+        if obj.check_type != CheckType.SCRIPT:
             return []
 
+        agent = self.context["agent"] if "agent" in self.context.keys() else obj.agent
         return Script.parse_script_args(
-            agent=obj.agent, shell=obj.script.shell, args=obj.script_args
+            agent=agent, shell=obj.script.shell, args=obj.script_args
         )
 
     class Meta:
         model = Check
         exclude = [
             "policy",
-            "managed_by_policy",
-            "overriden_by_policy",
-            "parent_check",
+            "overridden_by_policy",
             "name",
-            "more_info",
-            "last_run",
             "email_alert",
             "text_alert",
             "fails_b4_alert",
-            "fail_count",
-            "outage_history",
-            "extra_details",
-            "stdout",
-            "stderr",
-            "retcode",
-            "execution_time",
             "svc_display_name",
             "svc_policy_mode",
             "created_by",
             "created_time",
             "modified_by",
             "modified_time",
-            "history",
             "dashboard_alert",
         ]
 
 
-class CheckResultsSerializer(serializers.ModelSerializer):
-    # used when patching results from the windows agent
-    # no validation needed
-
-    class Meta:
-        model = Check
-        fields = "__all__"
-
-
 class CheckHistorySerializer(serializers.ModelSerializer):
-    x = serializers.SerializerMethodField()
-
-    def get_x(self, obj):
-        return obj.x.astimezone(pytz.timezone(self.context["timezone"])).isoformat()
-
     # used for return large amounts of graph data
     class Meta:
         model = CheckHistory

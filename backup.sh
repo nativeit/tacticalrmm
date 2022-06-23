@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-SCRIPT_VERSION="18"
+SCRIPT_VERSION="19"
 SCRIPT_URL='https://raw.githubusercontent.com/amidaware/tacticalrmm/master/backup.sh'
 
 GREEN='\033[0;32m'
@@ -55,7 +55,6 @@ mkdir ${tmp_dir}/nginx
 mkdir ${tmp_dir}/systemd
 mkdir ${tmp_dir}/rmm
 mkdir ${tmp_dir}/confd
-mkdir ${tmp_dir}/redis
 
 
 pg_dump --dbname=postgresql://"${POSTGRES_USER}":"${POSTGRES_PW}"@127.0.0.1:5432/tacticalrmm | gzip -9 > ${tmp_dir}/postgres/db-${dt_now}.psql.gz
@@ -69,8 +68,6 @@ sudo tar -czvf ${tmp_dir}/nginx/etc-nginx.tar.gz -C /etc/nginx .
 
 sudo tar -czvf ${tmp_dir}/confd/etc-confd.tar.gz -C /etc/conf.d .
 
-sudo gzip -9 -c /var/lib/redis/appendonly.aof > ${tmp_dir}/redis/appendonly.aof.gz
-
 sudo cp ${sysd}/rmm.service ${sysd}/celery.service ${sysd}/celerybeat.service ${sysd}/meshcentral.service ${sysd}/nats.service ${sysd}/daphne.service ${tmp_dir}/systemd/
 if [ -f "${sysd}/nats-api.service" ]; then
     sudo cp ${sysd}/nats-api.service ${tmp_dir}/systemd/
@@ -78,7 +75,6 @@ fi
 
 cat /rmm/api/tacticalrmm/tacticalrmm/private/log/django_debug.log | gzip -9 > ${tmp_dir}/rmm/debug.log.gz
 cp /rmm/api/tacticalrmm/tacticalrmm/local_settings.py ${tmp_dir}/rmm/
-cp /rmm/web/.env ${tmp_dir}/rmm/env
 
 tar -cf /rmmbackups/rmm-backup-${dt_now}.tar -C ${tmp_dir} .
 

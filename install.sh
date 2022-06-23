@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-SCRIPT_VERSION="60"
+SCRIPT_VERSION="63"
 SCRIPT_URL='https://raw.githubusercontent.com/amidaware/tacticalrmm/master/install.sh'
 
 sudo apt install -y curl wget dirmngr gnupg lsb-release
@@ -11,8 +11,9 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-SCRIPTS_DIR="/opt/trmm-community-scripts"
-PYTHON_VER="3.10.2"
+SCRIPTS_DIR='/opt/trmm-community-scripts'
+PYTHON_VER='3.10.4'
+SETTINGS_FILE='/rmm/api/tacticalrmm/tacticalrmm/settings.py'
 
 TMP_FILE=$(mktemp -p "" "rmminstall_XXXXXXXXXX")
 curl -s -L "${SCRIPT_URL}" > ${TMP_FILE}
@@ -157,10 +158,10 @@ sudo apt install -y certbot openssl
 
 print_green 'Getting wildcard cert'
 
-sudo certbot certonly --manual -d *.${rootdomain} --agree-tos --no-bootstrap --manual-public-ip-logging-ok --preferred-challenges dns -m ${letsemail} --no-eff-email
+sudo certbot certonly --manual -d *.${rootdomain} --agree-tos --no-bootstrap --preferred-challenges dns -m ${letsemail} --no-eff-email
 while [[ $? -ne 0 ]]
 do
-sudo certbot certonly --manual -d *.${rootdomain} --agree-tos --no-bootstrap --manual-public-ip-logging-ok --preferred-challenges dns -m ${letsemail} --no-eff-email 
+sudo certbot certonly --manual -d *.${rootdomain} --agree-tos --no-bootstrap --preferred-challenges dns -m ${letsemail} --no-eff-email
 done
 
 CERT_PRIV_KEY=/etc/letsencrypt/live/${rootdomain}/privkey.pem
@@ -193,7 +194,7 @@ sudo apt install -y mongodb-org
 sudo systemctl enable mongod
 sudo systemctl restart mongod
 
-print_green 'Installing Python 3.10.2'
+print_green "Installing Python ${PYTHON_VER}"
 
 sudo apt install -y build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libssl-dev libreadline-dev libffi-dev libsqlite3-dev libbz2-dev
 numprocs=$(nproc)
@@ -210,10 +211,6 @@ sudo rm -rf Python-${PYTHON_VER} Python-${PYTHON_VER}.tgz
 
 print_green 'Installing redis and git'
 sudo apt install -y ca-certificates redis git
-
-# apply redis configuration
-sudo redis-cli config set appendonly yes
-sudo redis-cli config rewrite
 
 print_green 'Installing postgresql'
 
@@ -236,6 +233,8 @@ sudo -u postgres psql -c "ALTER ROLE ${pgusername} SET default_transaction_isola
 sudo -u postgres psql -c "ALTER ROLE ${pgusername} SET timezone TO 'UTC'"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE tacticalrmm TO ${pgusername}"
 
+print_green 'Cloning repos'
+
 sudo mkdir /rmm
 sudo chown ${USER}:${USER} /rmm
 sudo mkdir -p /var/log/celery
@@ -256,7 +255,7 @@ git checkout main
 
 print_green 'Downloading NATS'
 
-NATS_SERVER_VER=$(grep "^NATS_SERVER_VER" /rmm/api/tacticalrmm/tacticalrmm/settings.py | awk -F'[= "]' '{print $5}')
+NATS_SERVER_VER=$(grep "^NATS_SERVER_VER" "$SETTINGS_FILE" | awk -F'[= "]' '{print $5}')
 nats_tmp=$(mktemp -d -t nats-XXXXXXXXXX)
 wget https://github.com/nats-io/nats-server/releases/download/v${NATS_SERVER_VER}/nats-server-v${NATS_SERVER_VER}-linux-amd64.tar.gz -P ${nats_tmp}
 tar -xzf ${nats_tmp}/nats-server-v${NATS_SERVER_VER}-linux-amd64.tar.gz -C ${nats_tmp}
@@ -267,7 +266,7 @@ rm -rf ${nats_tmp}
 
 print_green 'Installing MeshCentral'
 
-MESH_VER=$(grep "^MESH_VER" /rmm/api/tacticalrmm/tacticalrmm/settings.py | awk -F'[= "]' '{print $5}')
+MESH_VER=$(grep "^MESH_VER" "$SETTINGS_FILE" | awk -F'[= "]' '{print $5}')
 
 sudo mkdir -p /meshcentral/meshcentral-data
 sudo chown ${USER}:${USER} -R /meshcentral
@@ -352,8 +351,8 @@ sudo chmod +x /usr/local/bin/nats-api
 
 print_green 'Installing the backend'
 
-SETUPTOOLS_VER=$(grep "^SETUPTOOLS_VER" /rmm/api/tacticalrmm/tacticalrmm/settings.py | awk -F'[= "]' '{print $5}')
-WHEEL_VER=$(grep "^WHEEL_VER" /rmm/api/tacticalrmm/tacticalrmm/settings.py | awk -F'[= "]' '{print $5}')
+SETUPTOOLS_VER=$(grep "^SETUPTOOLS_VER" "$SETTINGS_FILE" | awk -F'[= "]' '{print $5}')
+WHEEL_VER=$(grep "^WHEEL_VER" "$SETTINGS_FILE" | awk -F'[= "]' '{print $5}')
 
 cd /rmm/api
 python3.10 -m venv env
@@ -367,6 +366,7 @@ python manage.py collectstatic --no-input
 python manage.py create_natsapi_conf
 python manage.py load_chocos
 python manage.py load_community_scripts
+WEB_VERSION=$(python manage.py get_config webversion)
 printf >&2 "${YELLOW}%0.s*${NC}" {1..80}
 printf >&2 "\n"
 printf >&2 "${YELLOW}Please create your login for the RMM website and django admin${NC}\n"
@@ -542,15 +542,6 @@ server {
         alias /rmm/api/tacticalrmm/tacticalrmm/private/;
     }
 
-    location ~ ^/(natsapi) {
-        allow 127.0.0.1;
-        deny all;
-        uwsgi_pass tacticalrmm;
-        include     /etc/nginx/uwsgi_params;
-        uwsgi_read_timeout 500s;
-        uwsgi_ignore_client_abort on;
-    }
-
     location ~ ^/ws/ {
         proxy_pass http://unix:/rmm/daphne.sock;
 
@@ -568,7 +559,7 @@ server {
     location / {
         uwsgi_pass  tacticalrmm;
         include     /etc/nginx/uwsgi_params;
-        uwsgi_read_timeout 9999s;
+        uwsgi_read_timeout 300s;
         uwsgi_ignore_client_abort on;
     }
 }
@@ -658,7 +649,7 @@ CELERY_APP="tacticalrmm"
 
 CELERYD_MULTI="multi"
 
-CELERYD_OPTS="--time-limit=86400 --autoscale=50,3"
+CELERYD_OPTS="--time-limit=86400 --autoscale=20,2"
 
 CELERYD_PID_FILE="/rmm/api/tacticalrmm/%n.pid"
 CELERYD_LOG_FILE="/var/log/celery/%n%I.log"
@@ -717,24 +708,23 @@ echo "${meshservice}" | sudo tee /etc/systemd/system/meshcentral.service > /dev/
 
 sudo systemctl daemon-reload
 
-sudo chown -R $USER:$GROUP /home/${USER}/.npm
-sudo chown -R $USER:$GROUP /home/${USER}/.config
+if [ -d ~/.npm ]; then
+  sudo chown -R $USER:$GROUP ~/.npm
+fi
 
-quasarenv="$(cat << EOF
-PROD_URL = "https://${rmmdomain}"
-DEV_URL = "https://${rmmdomain}"
-EOF
-)"
-echo "${quasarenv}" | tee /rmm/web/.env > /dev/null
+if [ -d ~/.config ]; then
+  sudo chown -R $USER:$GROUP ~/.config
+fi
 
 print_green 'Installing the frontend'
 
-cd /rmm/web
-npm install
-npm run build
+webtar="trmm-web-v${WEB_VERSION}.tar.gz"
+wget -q https://github.com/amidaware/tacticalrmm-web/releases/download/v${WEB_VERSION}/${webtar} -O /tmp/${webtar}
 sudo mkdir -p /var/www/rmm
-sudo cp -pvr /rmm/web/dist /var/www/rmm/
+sudo tar -xzf /tmp/${webtar} -C /var/www/rmm
+echo "window._env_ = {PROD_URL: \"https://${rmmdomain}\"}" | sudo tee /var/www/rmm/dist/env-config.js > /dev/null
 sudo chown www-data:www-data -R /var/www/rmm/dist
+rm -f /tmp/${webtar}
 
 nginxfrontend="$(cat << EOF
 server {
@@ -865,7 +855,7 @@ printf >&2 "${YELLOW}%0.s*${NC}" {1..80}
 printf >&2 "\n\n"
 printf >&2 "${YELLOW}Installation complete!${NC}\n\n"
 printf >&2 "${YELLOW}Access your rmm at: ${GREEN}https://${frontenddomain}${NC}\n\n"
-printf >&2 "${YELLOW}Django admin url (disabled by default): ${GREEN}https://${rmmdomain}/${ADMINURL}${NC}\n\n"
+printf >&2 "${YELLOW}Django admin url (disabled by default): ${GREEN}https://${rmmdomain}/${ADMINURL}/${NC}\n\n"
 printf >&2 "${YELLOW}MeshCentral username: ${GREEN}${meshusername}${NC}\n"
 printf >&2 "${YELLOW}MeshCentral password: ${GREEN}${MESHPASSWD}${NC}\n\n"
 

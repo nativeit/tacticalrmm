@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-SCRIPT_VERSION="35"
+SCRIPT_VERSION="37"
 SCRIPT_URL='https://raw.githubusercontent.com/amidaware/tacticalrmm/master/restore.sh'
 
 sudo apt update
@@ -12,8 +12,9 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-SCRIPTS_DIR="/opt/trmm-community-scripts"
-PYTHON_VER="3.10.2"
+SCRIPTS_DIR='/opt/trmm-community-scripts'
+PYTHON_VER='3.10.4'
+SETTINGS_FILE='/rmm/api/tacticalrmm/tacticalrmm/settings.py'
 
 TMP_FILE=$(mktemp -p "" "rmmrestore_XXXXXXXXXX")
 curl -s -L "${SCRIPT_URL}" > ${TMP_FILE}
@@ -164,7 +165,7 @@ print_green 'Restoring systemd services'
 sudo cp $tmp_dir/systemd/* /etc/systemd/system/
 sudo systemctl daemon-reload
 
-print_green 'Installing Python 3.10.2'
+print_green 'Installing Python 3.10.4'
 
 sudo apt install -y build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libssl-dev libreadline-dev libffi-dev libsqlite3-dev libbz2-dev
 numprocs=$(nproc)
@@ -181,13 +182,6 @@ sudo rm -rf Python-${PYTHON_VER} Python-${PYTHON_VER}.tgz
 
 print_green 'Installing redis and git'
 sudo apt install -y ca-certificates redis git
-
-# redis configuration
-sudo gzip -dkc ${tmp_dir}/redis/appendonly.aof.gz | sudo tee /var/lib/redis/appendonly.aof > /dev/null
-sudo redis-check-aof --fix /var/lib/redis/appendonly.aof
-
-sudo redis-cli config set appendonly yes
-sudo redis-cli config rewrite
 
 print_green 'Installing postgresql'
 
@@ -231,7 +225,7 @@ git checkout main
 
 print_green 'Restoring NATS'
 
-NATS_SERVER_VER=$(grep "^NATS_SERVER_VER" /rmm/api/tacticalrmm/tacticalrmm/settings.py | awk -F'[= "]' '{print $5}')
+NATS_SERVER_VER=$(grep "^NATS_SERVER_VER" "$SETTINGS_FILE" | awk -F'[= "]' '{print $5}')
 nats_tmp=$(mktemp -d -t nats-XXXXXXXXXX)
 wget https://github.com/nats-io/nats-server/releases/download/v${NATS_SERVER_VER}/nats-server-v${NATS_SERVER_VER}-linux-amd64.tar.gz -P ${nats_tmp}
 tar -xzf ${nats_tmp}/nats-server-v${NATS_SERVER_VER}-linux-amd64.tar.gz -C ${nats_tmp}
@@ -242,7 +236,7 @@ rm -rf ${nats_tmp}
 
 print_green 'Restoring MeshCentral'
 
-MESH_VER=$(grep "^MESH_VER" /rmm/api/tacticalrmm/tacticalrmm/settings.py | awk -F'[= "]' '{print $5}')
+MESH_VER=$(grep "^MESH_VER" "$SETTINGS_FILE" | awk -F'[= "]' '{print $5}')
 sudo tar -xzf $tmp_dir/meshcentral/mesh.tar.gz -C /
 sudo chown ${USER}:${USER} -R /meshcentral
 cd /meshcentral
@@ -306,8 +300,8 @@ sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE tacticalrmm TO ${pgus
 gzip -d $tmp_dir/postgres/*.psql.gz
 PGPASSWORD=${pgpw} psql -h localhost -U ${pgusername} -d tacticalrmm -f $tmp_dir/postgres/db*.psql
 
-SETUPTOOLS_VER=$(grep "^SETUPTOOLS_VER" /rmm/api/tacticalrmm/tacticalrmm/settings.py | awk -F'[= "]' '{print $5}')
-WHEEL_VER=$(grep "^WHEEL_VER" /rmm/api/tacticalrmm/tacticalrmm/settings.py | awk -F'[= "]' '{print $5}')
+SETUPTOOLS_VER=$(grep "^SETUPTOOLS_VER" "$SETTINGS_FILE" | awk -F'[= "]' '{print $5}')
+WHEEL_VER=$(grep "^WHEEL_VER" "$SETTINGS_FILE" | awk -F'[= "]' '{print $5}')
 
 cd /rmm/api
 python3.10 -m venv env
@@ -321,6 +315,8 @@ python manage.py collectstatic --no-input
 python manage.py create_natsapi_conf
 python manage.py reload_nats
 python manage.py post_update_tasks
+API=$(python manage.py get_config api)
+WEB_VERSION=$(python manage.py get_config webversion)
 deactivate
 
 sudo systemctl enable nats.service
@@ -328,14 +324,13 @@ sudo systemctl start nats.service
 
 print_green 'Restoring the frontend'
 
-sudo chown -R $USER:$GROUP /home/${USER}/.npm
-sudo chown -R $USER:$GROUP /home/${USER}/.config
-cd /rmm/web
-npm install
-npm run build
+webtar="trmm-web-v${WEB_VERSION}.tar.gz"
+wget -q https://github.com/amidaware/tacticalrmm-web/releases/download/v${WEB_VERSION}/${webtar} -O /tmp/${webtar}
 sudo mkdir -p /var/www/rmm
-sudo cp -pvr /rmm/web/dist /var/www/rmm/
+sudo tar -xzf /tmp/${webtar} -C /var/www/rmm
+echo "window._env_ = {PROD_URL: \"https://${API}\"}" | sudo tee /var/www/rmm/dist/env-config.js > /dev/null
 sudo chown www-data:www-data -R /var/www/rmm/dist
+rm -f /tmp/${webtar}
 
 
 # reset perms

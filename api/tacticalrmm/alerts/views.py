@@ -7,7 +7,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from tacticalrmm.utils import notify_error
+from tacticalrmm.helpers import notify_error
 
 from .models import Alert, AlertTemplate
 from .permissions import AlertPerms, AlertTemplatePerms
@@ -92,7 +92,7 @@ class GetAddAlerts(APIView):
                 )
 
             alerts = (
-                Alert.objects.filter_by_role(request.user)
+                Alert.objects.filter_by_role(request.user)  # type: ignore
                 .filter(clientFilter)
                 .filter(severityFilter)
                 .filter(resolvedFilter)
@@ -102,7 +102,7 @@ class GetAddAlerts(APIView):
             return Response(AlertSerializer(alerts, many=True).data)
 
         else:
-            alerts = Alert.objects.filter_by_role(request.user)
+            alerts = Alert.objects.filter_by_role(request.user)  # type: ignore
             return Response(AlertSerializer(alerts, many=True).data)
 
     def post(self, request):

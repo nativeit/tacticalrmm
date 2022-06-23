@@ -2,37 +2,26 @@ import asyncio
 import tempfile
 import urllib.parse
 
-from core.models import CodeSignToken, CoreSettings
-from core.utils import get_mesh_device_id, get_mesh_ws_url
 from django.conf import settings
 from django.http import FileResponse
 
+from core.utils import get_core_settings, get_mesh_device_id, get_mesh_ws_url
 from tacticalrmm.constants import MeshAgentIdent
 
 
-def get_agent_url(arch: str, plat: str) -> str:
+def get_agent_url(*, goarch: str, plat: str, token: str = "") -> str:
+    ver = settings.LATEST_AGENT_VER
+    if token:
+        params = {
+            "version": ver,
+            "arch": goarch,
+            "token": token,
+            "plat": plat,
+            "api": settings.ALLOWED_HOSTS[0],
+        }
+        return settings.AGENTS_URL + urllib.parse.urlencode(params)
 
-    if plat == "windows":
-        endpoint = "winagents"
-        dl_url = settings.DL_32 if arch == "32" else settings.DL_64
-    else:
-        endpoint = "linuxagents"
-        dl_url = ""
-
-    try:
-        t: CodeSignToken = CodeSignToken.objects.first()  # type: ignore
-        if t.is_valid:
-            base_url = settings.EXE_GEN_URL + f"/api/v1/{endpoint}/?"
-            params = {
-                "version": settings.LATEST_AGENT_VER,
-                "arch": arch,
-                "token": t.token,
-            }
-            dl_url = base_url + urllib.parse.urlencode(params)
-    except:
-        pass
-
-    return dl_url
+    return f"https://github.com/amidaware/rmmagent/releases/download/v{ver}/tacticalagent-v{ver}-{plat}-{goarch}.exe"
 
 
 def generate_linux_install(
@@ -54,12 +43,16 @@ def generate_linux_install(
             arch_id = MeshAgentIdent.LINUX_ARM_64
         case "arm":
             arch_id = MeshAgentIdent.LINUX_ARM_HF
+        case _:
+            arch_id = "not_found"
 
-    core: CoreSettings = CoreSettings.objects.first()  # type: ignore
+    core = get_core_settings()
 
     uri = get_mesh_ws_url()
     mesh_id = asyncio.run(get_mesh_device_id(uri, core.mesh_device_group))
-    mesh_dl = f"{core.mesh_site}/meshagents?id={mesh_id}&installflags=0&meshinstall={arch_id}"  # type: ignore
+    mesh_dl = (
+        f"{core.mesh_site}/meshagents?id={mesh_id}&installflags=0&meshinstall={arch_id}"
+    )
 
     sh = settings.LINUX_AGENT_SCRIPT
     with open(sh, "r") as f:

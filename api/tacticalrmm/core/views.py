@@ -1,23 +1,22 @@
-import os
 import re
 
 from django.conf import settings
 from django.shortcuts import get_object_or_404
-from logs.models import AuditLog
-from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import ParseError, PermissionDenied
-from rest_framework.parsers import FileUploadParser
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.utils import get_core_settings, token_is_valid
+from logs.models import AuditLog
+from tacticalrmm.constants import AuditActionType, PAStatus
+from tacticalrmm.helpers import notify_error
 from tacticalrmm.permissions import (
     _has_perm_on_agent,
     _has_perm_on_client,
     _has_perm_on_site,
 )
-from tacticalrmm.utils import notify_error
 
 from .models import CodeSignToken, CoreSettings, CustomField, GlobalKVStore, URLAction
 from .permissions import (
@@ -58,6 +57,14 @@ def version(request):
 
 
 @api_view()
+def clear_cache(request):
+    from core.utils import clear_entire_cache
+
+    clear_entire_cache()
+    return Response("Cache was cleared!")
+
+
+@api_view()
 def dashboard_info(request):
     from tacticalrmm.utils import get_latest_trmm_ver
 
@@ -77,6 +84,8 @@ def dashboard_info(request):
             "loading_bar_color": request.user.loading_bar_color,
             "clear_search_when_switching": request.user.clear_search_when_switching,
             "hosted": getattr(settings, "HOSTED", False),
+            "date_format": request.user.date_format,
+            "default_date_format": get_core_settings().date_format,
         }
     )
 
@@ -84,15 +93,15 @@ def dashboard_info(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, CoreSettingsPerms])
 def email_test(request):
-    core = CoreSettings.objects.first()
-    r = core.send_mail(
+    core = get_core_settings()
+
+    msg, ok = core.send_mail(
         subject="Test from Tactical RMM", body="This is a test message", test=True
     )
+    if not ok:
+        return notify_error(msg)
 
-    if not isinstance(r, bool) and isinstance(r, str):
-        return notify_error(r)
-
-    return Response("Email Test OK!")
+    return Response(msg)
 
 
 @api_view(["POST"])
@@ -108,14 +117,9 @@ def server_maintenance(request):
         return Response("Nats configuration was reloaded successfully.")
 
     if request.data["action"] == "rm_orphaned_tasks":
-        from agents.models import Agent
         from autotasks.tasks import remove_orphaned_win_tasks
 
-        agents = Agent.objects.only("pk", "last_seen", "overdue_time", "offline_time")
-        online = [i for i in agents if i.status == "online"]
-        for agent in online:
-            remove_orphaned_win_tasks.delay(agent.pk)
-
+        remove_orphaned_win_tasks.delay()
         return Response(
             "The task has been initiated. Check the Debug Log in the UI for progress."
         )
@@ -129,12 +133,12 @@ def server_maintenance(request):
         tables = request.data["prune_tables"]
         records_count = 0
         if "audit_logs" in tables:
-            auditlogs = AuditLog.objects.filter(action="check_run")
+            auditlogs = AuditLog.objects.filter(action=AuditActionType.CHECK_RUN)
             records_count += auditlogs.count()
             auditlogs.delete()
 
         if "pending_actions" in tables:
-            pendingactions = PendingAction.objects.filter(status="completed")
+            pendingactions = PendingAction.objects.filter(status=PAStatus.COMPLETED)
             records_count += pendingactions.count()
             pendingactions.delete()
 
@@ -212,17 +216,17 @@ class CodeSign(APIView):
 
         try:
             r = requests.post(
-                f"{settings.EXE_GEN_URL}/api/v1/checktoken",
-                json={"token": request.data["token"]},
+                settings.CHECK_TOKEN_URL,
+                json={"token": request.data["token"], "api": settings.ALLOWED_HOSTS[0]},
                 headers={"Content-type": "application/json"},
                 timeout=15,
             )
         except Exception as e:
             return notify_error(str(e))
 
-        if r.status_code == 400 or r.status_code == 401:  # type: ignore
-            return notify_error(r.json()["ret"])  # type: ignore
-        elif r.status_code == 200:  # type: ignore
+        if r.status_code == 400 or r.status_code == 401:
+            return notify_error(r.json()["ret"])
+        elif r.status_code == 200:
             t = CodeSignToken.objects.first()
             if t is None:
                 CodeSignToken.objects.create(token=request.data["token"])
@@ -233,28 +237,23 @@ class CodeSign(APIView):
             return Response("Token was saved")
 
         try:
-            ret = r.json()["ret"]  # type: ignore
+            ret = r.json()["ret"]
         except:
             ret = "Something went wrong"
         return notify_error(ret)
 
     def post(self, request):
         from agents.models import Agent
-        from agents.tasks import force_code_sign
+        from agents.tasks import send_agent_update_task
 
-        err = "A valid token must be saved first"
-        try:
-            t = CodeSignToken.objects.first().token
-        except:
-            return notify_error(err)
-
-        if t is None or t == "":
-            return notify_error(err)
+        token, is_valid = token_is_valid()
+        if not is_valid:
+            return notify_error("Invalid token")
 
         agent_ids: list[str] = list(
             Agent.objects.only("pk", "agent_id").values_list("agent_id", flat=True)
         )
-        force_code_sign.delay(agent_ids=agent_ids)
+        send_agent_update_task.delay(agent_ids=agent_ids, token=token, force=True)
         return Response("Agents will be code signed shortly")
 
 
@@ -330,10 +329,10 @@ class RunURLAction(APIView):
     permission_classes = [IsAuthenticated, URLActionPerms]
 
     def patch(self, request):
-        from agents.models import Agent
-        from clients.models import Client, Site
         from requests.utils import requote_uri
 
+        from agents.models import Agent
+        from clients.models import Client, Site
         from tacticalrmm.utils import replace_db_values
 
         if "agent_id" in request.data.keys():
@@ -380,15 +379,14 @@ class TwilioSMSTest(APIView):
 
     def post(self, request):
 
-        core = CoreSettings.objects.first()
+        core = get_core_settings()
         if not core.sms_is_configured:
             return notify_error(
                 "All fields are required, including at least 1 recipient"
             )
 
-        r = core.send_sms("TacticalRMM Test SMS", test=True)
+        msg, ok = core.send_sms("TacticalRMM Test SMS", test=True)
+        if not ok:
+            return notify_error(msg)
 
-        if not isinstance(r, bool) and isinstance(r, str):
-            return notify_error(r)
-
-        return Response("SMS Test sent successfully!")
+        return Response(msg)

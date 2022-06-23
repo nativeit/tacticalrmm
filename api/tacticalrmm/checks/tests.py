@@ -1,11 +1,17 @@
 from unittest.mock import patch
 
-from checks.models import CheckHistory
 from django.conf import settings
-from django.test import modify_settings
 from django.utils import timezone as djangotime
 from model_bakery import baker
 
+from checks.models import CheckHistory, CheckResult
+from tacticalrmm.constants import (
+    AlertSeverity,
+    CheckStatus,
+    CheckType,
+    EvtLogFailWhen,
+    EvtLogTypes,
+)
 from tacticalrmm.test import TacticalTestCase
 
 from .serializers import CheckSerializer
@@ -13,11 +19,6 @@ from .serializers import CheckSerializer
 base_url = "/checks"
 
 
-@modify_settings(
-    MIDDLEWARE={
-        "remove": "tacticalrmm.middleware.LinuxMiddleware",
-    }
-)
 class TestCheckViews(TacticalTestCase):
     def setUp(self):
         self.authenticate()
@@ -31,13 +32,13 @@ class TestCheckViews(TacticalTestCase):
 
         resp = self.client.get(url, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.data), 8)  # type: ignore
+        self.assertEqual(len(resp.data), 8)
 
         # test checks agent url
         url = f"/agents/{agent.agent_id}/checks/"
         resp = self.client.get(url, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.data), 4)  # type: ignore
+        self.assertEqual(len(resp.data), 4)
 
         # test agent doesn't exist
         url = f"/agents/jh3498uf8fkh4ro8hfd8df98/checks/"
@@ -72,7 +73,7 @@ class TestCheckViews(TacticalTestCase):
         serializer = CheckSerializer(disk_check)
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data, serializer.data)  # type: ignore
+        self.assertEqual(resp.data, serializer.data)
         self.check_not_authenticated("get", url)
 
     def test_add_disk_check(self):
@@ -84,7 +85,7 @@ class TestCheckViews(TacticalTestCase):
 
         agent_payload = {
             "agent": agent.agent_id,
-            "check_type": "diskspace",
+            "check_type": CheckType.DISK_SPACE,
             "disk": "C:",
             "error_threshold": 55,
             "warning_threshold": 0,
@@ -93,7 +94,7 @@ class TestCheckViews(TacticalTestCase):
 
         policy_payload = {
             "policy": policy.id,
-            "check_type": "diskspace",
+            "check_type": CheckType.DISK_SPACE,
             "disk": "C:",
             "error_threshold": 55,
             "warning_threshold": 0,
@@ -133,7 +134,7 @@ class TestCheckViews(TacticalTestCase):
 
         agent_payload = {
             "agent": agent.agent_id,
-            "check_type": "cpuload",
+            "check_type": CheckType.CPU_LOAD,
             "error_threshold": 66,
             "warning_threshold": 0,
             "fails_b4_alert": 9,
@@ -141,7 +142,7 @@ class TestCheckViews(TacticalTestCase):
 
         policy_payload = {
             "policy": policy.id,
-            "check_type": "cpuload",
+            "check_type": CheckType.CPU_LOAD,
             "error_threshold": 66,
             "warning_threshold": 0,
             "fails_b4_alert": 9,
@@ -180,7 +181,7 @@ class TestCheckViews(TacticalTestCase):
 
         agent_payload = {
             "agent": agent.agent_id,
-            "check_type": "memory",
+            "check_type": CheckType.MEMORY,
             "error_threshold": 78,
             "warning_threshold": 0,
             "fails_b4_alert": 1,
@@ -188,7 +189,7 @@ class TestCheckViews(TacticalTestCase):
 
         policy_payload = {
             "policy": policy.id,
-            "check_type": "memory",
+            "check_type": CheckType.MEMORY,
             "error_threshold": 78,
             "warning_threshold": 0,
             "fails_b4_alert": 1,
@@ -254,35 +255,44 @@ class TestCheckViews(TacticalTestCase):
         # setup data
         agent = baker.make_recipe("agents.agent")
         check = baker.make_recipe("checks.diskspace_check", agent=agent)
-        baker.make("checks.CheckHistory", check_id=check.id, _quantity=30)
+        check_result = baker.make(
+            "checks.CheckResult", assigned_check=check, agent=agent
+        )
+        baker.make(
+            "checks.CheckHistory",
+            check_id=check.id,
+            agent_id=agent.agent_id,
+            _quantity=30,
+        )
         check_history_data = baker.make(
             "checks.CheckHistory",
             check_id=check.id,
+            agent_id=agent.agent_id,
             _quantity=30,
         )
 
         # need to manually set the date back 35 days
-        for check_history in check_history_data:  # type: ignore
-            check_history.x = djangotime.now() - djangotime.timedelta(days=35)  # type: ignore
+        for check_history in check_history_data:
+            check_history.x = djangotime.now() - djangotime.timedelta(days=35)
             check_history.save()
 
         # test invalid check pk
-        resp = self.client.patch("/checks/history/500/", format="json")
+        resp = self.client.patch("/checks/500/history/", format="json")
         self.assertEqual(resp.status_code, 404)
 
-        url = f"/checks/{check.id}/history/"
+        url = f"/checks/{check_result.id}/history/"
 
         # test with timeFilter last 30 days
         data = {"timeFilter": 30}
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.data), 30)  # type: ignore
+        self.assertEqual(len(resp.data), 30)
 
         # test with timeFilter equal to 0
         data = {"timeFilter": 0}
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.data), 60)  # type: ignore
+        self.assertEqual(len(resp.data), 60)
 
         self.check_not_authenticated("patch", url)
 
@@ -306,8 +316,8 @@ class TestCheckTasks(TacticalTestCase):
         )
 
         # need to manually set the date back 35 days
-        for check_history in check_history_data:  # type: ignore
-            check_history.x = djangotime.now() - djangotime.timedelta(days=35)  # type: ignore
+        for check_history in check_history_data:
+            check_history.x = djangotime.now() - djangotime.timedelta(days=35)
             check_history.save()
 
         # prune data 30 days old
@@ -319,15 +329,14 @@ class TestCheckTasks(TacticalTestCase):
         self.assertEqual(CheckHistory.objects.count(), 0)
 
     def test_handle_script_check(self):
-        from checks.models import Check
-
         url = "/api/v3/checkrunner/"
 
-        script = baker.make_recipe("checks.script_check", agent=self.agent)
+        check = baker.make_recipe("checks.script_check", agent=self.agent)
 
         # test failing
         data = {
-            "id": script.id,
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
             "retcode": 500,
             "stderr": "error",
             "stdout": "message",
@@ -337,14 +346,15 @@ class TestCheckTasks(TacticalTestCase):
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=script.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "error")
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.ERROR)
 
         # test passing
         data = {
-            "id": script.id,
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
             "retcode": 0,
             "stderr": "error",
             "stdout": "message",
@@ -354,16 +364,17 @@ class TestCheckTasks(TacticalTestCase):
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=script.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEqual(new_check.status, "passing")
+        self.assertEqual(check_result.status, CheckStatus.PASSING)
 
         # test failing info
-        script.info_return_codes = [20, 30, 50]
-        script.save()
+        check.info_return_codes = [20, 30, 50]
+        check.save()
 
         data = {
-            "id": script.id,
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
             "retcode": 30,
             "stderr": "error",
             "stdout": "message",
@@ -373,17 +384,18 @@ class TestCheckTasks(TacticalTestCase):
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=script.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "info")
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.INFO)
 
         # test failing warning
-        script.warning_return_codes = [80, 100, 1040]
-        script.save()
+        check.warning_return_codes = [80, 100, 1040]
+        check.save()
 
         data = {
-            "id": script.id,
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
             "retcode": 1040,
             "stderr": "error",
             "stdout": "message",
@@ -393,17 +405,15 @@ class TestCheckTasks(TacticalTestCase):
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=script.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "warning")
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.WARNING)
 
     def test_handle_diskspace_check(self):
-        from checks.models import Check
-
         url = "/api/v3/checkrunner/"
 
-        diskspace = baker.make_recipe(
+        check = baker.make_recipe(
             "checks.diskspace_check",
             warning_threshold=20,
             error_threshold=10,
@@ -412,7 +422,8 @@ class TestCheckTasks(TacticalTestCase):
 
         # test warning threshold failure
         data = {
-            "id": diskspace.id,
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
             "exists": True,
             "percent_used": 85,
             "total": 500,
@@ -423,14 +434,15 @@ class TestCheckTasks(TacticalTestCase):
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=diskspace.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "warning")
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.WARNING)
 
         # test error failure
         data = {
-            "id": diskspace.id,
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
             "exists": True,
             "percent_used": 95,
             "total": 500,
@@ -441,27 +453,29 @@ class TestCheckTasks(TacticalTestCase):
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=diskspace.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "error")
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.ERROR)
 
         # test disk not exist
-        data = {"id": diskspace.id, "exists": False}
+        data = {"id": check.id, "agent_id": self.agent.agent_id, "exists": False}
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=diskspace.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "error")
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.ERROR)
 
         # test warning threshold 0
-        diskspace.warning_threshold = 0
-        diskspace.save()
+        check.warning_threshold = 0
+        check.save()
+
         data = {
-            "id": diskspace.id,
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
             "exists": True,
             "percent_used": 95,
             "total": 500,
@@ -472,16 +486,17 @@ class TestCheckTasks(TacticalTestCase):
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=diskspace.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "error")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.ERROR)
 
         # test error threshold 0
-        diskspace.warning_threshold = 50
-        diskspace.error_threshold = 0
-        diskspace.save()
+        check.warning_threshold = 50
+        check.error_threshold = 0
+        check.save()
         data = {
-            "id": diskspace.id,
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
             "exists": True,
             "percent_used": 95,
             "total": 500,
@@ -492,13 +507,14 @@ class TestCheckTasks(TacticalTestCase):
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=diskspace.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "warning")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.WARNING)
 
         # test passing
         data = {
-            "id": diskspace.id,
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
             "exists": True,
             "percent_used": 50,
             "total": 500,
@@ -509,16 +525,14 @@ class TestCheckTasks(TacticalTestCase):
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=diskspace.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEqual(new_check.status, "passing")
+        self.assertEqual(check_result.status, CheckStatus.PASSING)
 
     def test_handle_cpuload_check(self):
-        from checks.models import Check
-
         url = "/api/v3/checkrunner/"
 
-        cpuload = baker.make_recipe(
+        check = baker.make_recipe(
             "checks.cpuload_check",
             warning_threshold=70,
             error_threshold=90,
@@ -526,81 +540,79 @@ class TestCheckTasks(TacticalTestCase):
         )
 
         # test failing warning
-        data = {"id": cpuload.id, "percent": 80}
+        data = {"id": check.id, "agent_id": self.agent.agent_id, "percent": 80}
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=cpuload.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "warning")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.WARNING)
 
         # test failing error
-        data = {"id": cpuload.id, "percent": 95}
+        data = {"id": check.id, "agent_id": self.agent.agent_id, "percent": 95}
 
         # reset check history
-        cpuload.history = []
-        cpuload.save()
+        check_result.history = []
+        check_result.save()
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=cpuload.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "error")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.ERROR)
 
         # test passing
-        data = {"id": cpuload.id, "percent": 50}
+        data = {"id": check.id, "agent_id": self.agent.agent_id, "percent": 50}
 
         # reset check history
-        cpuload.history = []
-        cpuload.save()
+        check_result.history = []
+        check_result.save()
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=cpuload.id)
-        self.assertEqual(new_check.status, "passing")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.PASSING)
 
         # test warning threshold 0
-        cpuload.warning_threshold = 0
-        cpuload.save()
-        data = {"id": cpuload.id, "percent": 95}
+        check.warning_threshold = 0
+        check.save()
+        data = {"id": check.id, "agent_id": self.agent.agent_id, "percent": 95}
 
         # reset check history
-        cpuload.history = []
-        cpuload.save()
+        check_result.history = []
+        check_result.save()
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=cpuload.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "error")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.ERROR)
 
         # test error threshold 0
-        cpuload.warning_threshold = 50
-        cpuload.error_threshold = 0
-        cpuload.save()
-        data = {"id": cpuload.id, "percent": 95}
+        check.warning_threshold = 50
+        check.error_threshold = 0
+        check.save()
+        data = {"id": check.id, "agent_id": self.agent.agent_id, "percent": 95}
 
         # reset check history
-        cpuload.history = []
-        cpuload.save()
+        check_result.history = []
+        check_result.save()
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=cpuload.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "warning")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.WARNING)
 
     def test_handle_memory_check(self):
-        from checks.models import Check
-
         url = "/api/v3/checkrunner/"
 
-        memory = baker.make_recipe(
+        check = baker.make_recipe(
             "checks.memory_check",
             warning_threshold=70,
             error_threshold=90,
@@ -608,178 +620,193 @@ class TestCheckTasks(TacticalTestCase):
         )
 
         # test failing warning
-        data = {"id": memory.id, "percent": 80}
+        data = {"id": check.id, "agent_id": self.agent.agent_id, "percent": 80}
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=memory.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "warning")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.WARNING)
 
         # test failing error
-        data = {"id": memory.id, "percent": 95}
+        data = {"id": check.id, "agent_id": self.agent.agent_id, "percent": 95}
 
         # reset check history
-        memory.history = []
-        memory.save()
+        check_result.history = []
+        check_result.save()
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=memory.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "error")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.ERROR)
 
         # test passing
-        data = {"id": memory.id, "percent": 50}
+        data = {"id": check.id, "agent_id": self.agent.agent_id, "percent": 50}
 
         # reset check history
-        memory.history = []
-        memory.save()
+        check_result.history = []
+        check_result.save()
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=memory.id)
-        self.assertEqual(new_check.status, "passing")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.PASSING)
 
         # test warning threshold 0
-        memory.warning_threshold = 0
-        memory.save()
-        data = {"id": memory.id, "percent": 95}
+        check.warning_threshold = 0
+        check.save()
+        data = {"id": check.id, "agent_id": self.agent.agent_id, "percent": 95}
 
         # reset check history
-        memory.history = []
-        memory.save()
+        check_result.history = []
+        check_result.save()
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=memory.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "error")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.ERROR)
 
         # test error threshold 0
-        memory.warning_threshold = 50
-        memory.error_threshold = 0
-        memory.save()
-        data = {"id": memory.id, "percent": 95}
+        check.warning_threshold = 50
+        check.error_threshold = 0
+        check.save()
+        data = {"id": check.id, "agent_id": self.agent.agent_id, "percent": 95}
 
         # reset check history
-        memory.history = []
-        memory.save()
+        check_result.history = []
+        check_result.save()
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=memory.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "warning")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check_result.alert_severity, AlertSeverity.WARNING)
 
     def test_handle_ping_check(self):
-        from checks.models import Check
-
         url = "/api/v3/checkrunner/"
 
-        ping = baker.make_recipe(
-            "checks.ping_check", agent=self.agent, alert_severity="info"
+        check = baker.make_recipe(
+            "checks.ping_check", agent=self.agent, alert_severity=AlertSeverity.INFO
         )
 
         # test failing info
-        data = {"id": ping.id, "status": "failing", "output": "reply from a.com"}
+        data = {
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
+            "status": CheckStatus.FAILING,
+            "output": "reply from a.com",
+        }
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=ping.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "info")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check.alert_severity, AlertSeverity.INFO)
 
         # test failing warning
-        ping.alert_severity = "warning"
-        ping.save()
+        check.alert_severity = AlertSeverity.WARNING
+        check.save()
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=ping.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "warning")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check.alert_severity, AlertSeverity.WARNING)
 
         # test failing error
-        ping.alert_severity = "error"
-        ping.save()
+        check.alert_severity = AlertSeverity.ERROR
+        check.save()
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=ping.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "error")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check.alert_severity, AlertSeverity.ERROR)
 
         # test failing error
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=ping.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "error")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check.alert_severity, AlertSeverity.ERROR)
 
         # test passing
-        data = {"id": ping.id, "status": "passing", "output": "reply from a.com"}
+        data = {
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
+            "status": CheckStatus.PASSING,
+            "output": "reply from a.com",
+        }
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=ping.id)
-        self.assertEqual(new_check.status, "passing")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.PASSING)
 
     @patch("agents.models.Agent.nats_cmd")
     def test_handle_winsvc_check(self, nats_cmd):
-        from checks.models import Check
-
         url = "/api/v3/checkrunner/"
 
-        winsvc = baker.make_recipe(
-            "checks.winsvc_check", agent=self.agent, alert_severity="info"
+        check = baker.make_recipe(
+            "checks.winsvc_check", agent=self.agent, alert_severity=AlertSeverity.INFO
         )
 
         # test passing running
-        data = {"id": winsvc.id, "status": "passing", "more_info": "ok"}
+        data = {
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
+            "status": CheckStatus.PASSING,
+            "more_info": "ok",
+        }
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=winsvc.id)
-        self.assertEqual(new_check.status, "passing")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.PASSING)
 
         # test failing
-        data = {"id": winsvc.id, "status": "failing", "more_info": "ok"}
+        data = {
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
+            "status": CheckStatus.FAILING,
+            "more_info": "ok",
+        }
 
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=winsvc.id)
-        self.assertEqual(new_check.status, "failing")
-        self.assertEqual(new_check.alert_severity, "info")
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check.alert_severity, AlertSeverity.INFO)
 
     def test_handle_eventlog_check(self):
-        from checks.models import Check
-
         url = "/api/v3/checkrunner/"
 
-        eventlog = baker.make_recipe(
+        check = baker.make_recipe(
             "checks.eventlog_check",
-            event_type="warning",
-            fail_when="contains",
+            event_type=EvtLogTypes.WARNING,
+            fail_when=EvtLogFailWhen.CONTAINS,
             event_id=123,
-            alert_severity="warning",
+            alert_severity=AlertSeverity.WARNING,
             agent=self.agent,
         )
 
         data = {
-            "id": eventlog.id,
+            "id": check.id,
+            "agent_id": self.agent.agent_id,
             "log": [
                 {
                     "eventType": "warning",
@@ -808,51 +835,51 @@ class TestCheckTasks(TacticalTestCase):
             ],
         }
 
-        no_logs_data = {"id": eventlog.id, "log": []}
+        no_logs_data = {"id": check.id, "agent_id": self.agent.agent_id, "log": []}
 
         # test failing when contains
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=eventlog.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEquals(new_check.alert_severity, "warning")
-        self.assertEquals(new_check.status, "failing")
+        self.assertEqual(check.alert_severity, AlertSeverity.WARNING)
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
 
         # test passing when contains
         resp = self.client.patch(url, no_logs_data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=eventlog.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEquals(new_check.status, "passing")
+        self.assertEqual(check_result.status, CheckStatus.PASSING)
 
         # test failing when not contains and message and source
-        eventlog.fail_when = "not_contains"
-        eventlog.alert_severity = "error"
-        eventlog.save()
+        check.fail_when = EvtLogFailWhen.NOT_CONTAINS
+        check.alert_severity = AlertSeverity.ERROR
+        check.save()
 
         resp = self.client.patch(url, no_logs_data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=eventlog.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEquals(new_check.status, "failing")
-        self.assertEquals(new_check.alert_severity, "error")
+        self.assertEqual(check_result.status, CheckStatus.FAILING)
+        self.assertEqual(check.alert_severity, AlertSeverity.ERROR)
 
         # test passing when contains with source and message
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
 
-        new_check = Check.objects.get(pk=eventlog.id)
+        check_result = CheckResult.objects.get(assigned_check=check, agent=self.agent)
 
-        self.assertEquals(new_check.status, "passing")
+        self.assertEqual(check_result.status, CheckStatus.PASSING)
 
 
 class TestCheckPermissions(TacticalTestCase):
     def setUp(self):
         self.setup_coresettings()
-        self.client_setup()
+        self.setup_client()
 
     def test_get_checks_permissions(self):
         agent = baker.make_recipe("agents.agent")
@@ -876,7 +903,7 @@ class TestCheckPermissions(TacticalTestCase):
         )
 
         user = self.create_user_with_roles([])
-        self.client.force_authenticate(user=user)  # type: ignore
+        self.client.force_authenticate(user=user)
 
         self.check_not_authorized("get", f"{base_url}/")
         self.check_not_authorized("get", f"/agents/{agent.agent_id}/checks/")
@@ -890,15 +917,15 @@ class TestCheckPermissions(TacticalTestCase):
         user.role.save()
 
         r = self.check_authorized("get", f"{base_url}/")
-        self.assertEqual(len(r.data), 14)  # type: ignore
+        self.assertEqual(len(r.data), 14)
         r = self.check_authorized("get", f"/agents/{agent.agent_id}/checks/")
-        self.assertEqual(len(r.data), 5)  # type: ignore
+        self.assertEqual(len(r.data), 5)
         r = self.check_authorized(
             "get", f"/agents/{unauthorized_agent.agent_id}/checks/"
         )
-        self.assertEqual(len(r.data), 7)  # type: ignore
+        self.assertEqual(len(r.data), 7)
         r = self.check_authorized("get", f"/automation/policies/{policy.id}/checks/")
-        self.assertEqual(len(r.data), 2)  # type: ignore
+        self.assertEqual(len(r.data), 2)
 
         # test limiting to client
         user.role.can_view_clients.set([agent.client])
@@ -910,7 +937,7 @@ class TestCheckPermissions(TacticalTestCase):
 
         # make sure queryset is limited too
         r = self.client.get(f"{base_url}/")
-        self.assertEqual(len(r.data), 7)  # type: ignore
+        self.assertEqual(len(r.data), 7)
 
     def test_add_check_permissions(self):
         agent = baker.make_recipe("agents.agent")
@@ -919,7 +946,7 @@ class TestCheckPermissions(TacticalTestCase):
 
         policy_data = {
             "policy": policy.id,
-            "check_type": "diskspace",
+            "check_type": CheckType.DISK_SPACE,
             "disk": "C:",
             "error_threshold": 55,
             "warning_threshold": 0,
@@ -928,7 +955,7 @@ class TestCheckPermissions(TacticalTestCase):
 
         agent_data = {
             "agent": agent.agent_id,
-            "check_type": "diskspace",
+            "check_type": CheckType.DISK_SPACE,
             "disk": "C:",
             "error_threshold": 55,
             "warning_threshold": 0,
@@ -937,7 +964,7 @@ class TestCheckPermissions(TacticalTestCase):
 
         unauthorized_agent_data = {
             "agent": unauthorized_agent.agent_id,
-            "check_type": "diskspace",
+            "check_type": CheckType.DISK_SPACE,
             "disk": "C:",
             "error_threshold": 55,
             "warning_threshold": 0,
@@ -951,7 +978,7 @@ class TestCheckPermissions(TacticalTestCase):
             self.check_authorized_superuser("post", url, data)
 
             user = self.create_user_with_roles([])
-            self.client.force_authenticate(user=user)  # type: ignore
+            self.client.force_authenticate(user=user)
 
             # test user without role
             self.check_not_authorized("post", url, data)
@@ -992,7 +1019,7 @@ class TestCheckPermissions(TacticalTestCase):
             self.check_authorized_superuser(method, policy_url)
 
             user = self.create_user_with_roles([])
-            self.client.force_authenticate(user=user)  # type: ignore
+            self.client.force_authenticate(user=user)
 
             # test user without role
             self.check_not_authorized(method, url)
@@ -1024,12 +1051,22 @@ class TestCheckPermissions(TacticalTestCase):
         agent = baker.make_recipe("agents.agent")
         unauthorized_agent = baker.make_recipe("agents.agent")
         check = baker.make("checks.Check", agent=agent)
+        check_result = baker.make(
+            "checks.CheckResult", agent=agent, assigned_check=check
+        )
         unauthorized_check = baker.make("checks.Check", agent=unauthorized_agent)
+        unauthorized_check_result = baker.make(
+            "checks.CheckResult",
+            agent=unauthorized_agent,
+            assigned_check=unauthorized_check,
+        )
 
         for action in ["reset", "run"]:
             if action == "reset":
-                url = f"{base_url}/{check.id}/{action}/"
-                unauthorized_url = f"{base_url}/{unauthorized_check.id}/{action}/"
+                url = f"{base_url}/{check_result.id}/{action}/"
+                unauthorized_url = (
+                    f"{base_url}/{unauthorized_check_result.id}/{action}/"
+                )
             else:
                 url = f"{base_url}/{agent.agent_id}/{action}/"
                 unauthorized_url = f"{base_url}/{unauthorized_agent.agent_id}/{action}/"
@@ -1039,7 +1076,7 @@ class TestCheckPermissions(TacticalTestCase):
             self.check_authorized_superuser("post", unauthorized_url)
 
             user = self.create_user_with_roles([])
-            self.client.force_authenticate(user=user)  # type: ignore
+            self.client.force_authenticate(user=user)
 
             # test user without role
             self.check_not_authorized("post", url)
@@ -1066,17 +1103,25 @@ class TestCheckPermissions(TacticalTestCase):
         agent = baker.make_recipe("agents.agent")
         unauthorized_agent = baker.make_recipe("agents.agent")
         check = baker.make("checks.Check", agent=agent)
+        check_result = baker.make(
+            "checks.CheckResult", agent=agent, assigned_check=check
+        )
         unauthorized_check = baker.make("checks.Check", agent=unauthorized_agent)
+        unauthorized_check_result = baker.make(
+            "checks.CheckResult",
+            agent=unauthorized_agent,
+            assigned_check=unauthorized_check,
+        )
 
-        url = f"{base_url}/{check.id}/history/"
-        unauthorized_url = f"{base_url}/{unauthorized_check.id}/history/"
+        url = f"{base_url}/{check_result.id}/history/"
+        unauthorized_url = f"{base_url}/{unauthorized_check_result.id}/history/"
 
         # test superuser access
         self.check_authorized_superuser("patch", url)
         self.check_authorized_superuser("patch", unauthorized_url)
 
         user = self.create_user_with_roles([])
-        self.client.force_authenticate(user=user)  # type: ignore
+        self.client.force_authenticate(user=user)
 
         # test user without role
         self.check_not_authorized("patch", url)
@@ -1098,12 +1143,3 @@ class TestCheckPermissions(TacticalTestCase):
 
         self.check_authorized("patch", url)
         self.check_not_authorized("patch", unauthorized_url)
-
-    def test_policy_fields_to_copy_exists(self):
-        from .models import Check
-
-        fields = [i.name for i in Check._meta.get_fields()]
-        check = baker.make("checks.Check")
-
-        for i in check.policy_fields_to_copy:  # type: ignore
-            self.assertIn(i, fields)

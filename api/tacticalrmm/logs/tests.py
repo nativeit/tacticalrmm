@@ -4,6 +4,7 @@ from unittest.mock import patch
 from django.utils import timezone as djangotime
 from model_bakery import baker, seq
 
+from tacticalrmm.constants import DebugLogLevel, DebugLogType, PAAction, PAStatus
 from tacticalrmm.test import TacticalTestCase
 
 base_url = "/logs"
@@ -168,22 +169,22 @@ class TestAuditViews(TacticalTestCase):
         baker.make(
             "logs.PendingAction",
             agent=agent1,
-            action_type="chocoinstall",
+            action_type=PAAction.CHOCO_INSTALL,
             details={"name": "googlechrome", "output": None, "installed": False},
             _quantity=12,
         )
         baker.make(
             "logs.PendingAction",
             agent=agent2,
-            action_type="chocoinstall",
-            status="completed",
+            action_type=PAAction.CHOCO_INSTALL,
+            status=PAStatus.COMPLETED,
             details={"name": "adobereader", "output": None, "installed": False},
             _quantity=14,
         )
 
         r = self.client.get(url, format="json")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(len(r.data), 26)  # type: ignore
+        self.assertEqual(len(r.data), 26)
 
         self.check_not_authenticated("get", url)
 
@@ -194,7 +195,7 @@ class TestAuditViews(TacticalTestCase):
         action = baker.make(
             "logs.PendingAction",
             agent=agent,
-            action_type="schedreboot",
+            action_type=PAAction.SCHED_REBOOT,
             details={
                 "time": "2021-01-13 18:20:00",
                 "taskname": "TacticalRMM_SchedReboot_wYzCCDVXlc",
@@ -220,7 +221,7 @@ class TestAuditViews(TacticalTestCase):
         action2 = baker.make(
             "logs.PendingAction",
             agent=agent,
-            action_type="schedreboot",
+            action_type=PAAction.SCHED_REBOOT,
             details={
                 "time": "2021-01-13 18:20:00",
                 "taskname": "TacticalRMM_SchedReboot_wYzCCDVXlc",
@@ -232,7 +233,7 @@ class TestAuditViews(TacticalTestCase):
             f"{base_url}/pendingactions/{action2.id}/", format="json"
         )
         self.assertEqual(r.status_code, 400)
-        self.assertEqual(r.data, "error deleting sched task")  # type: ignore
+        self.assertEqual(r.data, "error deleting sched task")
 
         self.check_not_authenticated("delete", url)
 
@@ -243,16 +244,16 @@ class TestAuditViews(TacticalTestCase):
         agent = baker.make_recipe("agents.agent")
         baker.make(
             "logs.DebugLog",
-            log_level=cycle(["error", "info", "warning", "critical"]),
-            log_type="agent_issues",
+            log_level=cycle([i.value for i in DebugLogLevel]),
+            log_type=DebugLogType.AGENT_ISSUES,
             agent=agent,
             _quantity=4,
         )
 
         logs = baker.make(
             "logs.DebugLog",
-            log_type="system_issues",
-            log_level=cycle(["error", "info", "warning", "critical"]),
+            log_type=DebugLogType.SYSTEM_ISSUES,
+            log_level=cycle([i.value for i in DebugLogLevel]),
             _quantity=15,
         )
 
@@ -260,19 +261,22 @@ class TestAuditViews(TacticalTestCase):
         data = {"agentFilter": agent.agent_id}
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.data), 4)  # type: ignore
+        self.assertEqual(len(resp.data), 4)
 
         # test log type filter and agent
         data = {"agentFilter": agent.agent_id, "logLevelFilter": "warning"}
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.data), 1)  # type: ignore
+        self.assertEqual(len(resp.data), 1)
 
         # test time filter with other
-        data = {"logTypeFilter": "system_issues", "logLevelFilter": "error"}
+        data = {
+            "logTypeFilter": DebugLogType.SYSTEM_ISSUES.value,
+            "logLevelFilter": "error",
+        }
         resp = self.client.patch(url, data, format="json")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(len(resp.data), 4)  # type: ignore
+        self.assertEqual(len(resp.data), 4)
 
         self.check_not_authenticated("patch", url)
 
@@ -294,7 +298,7 @@ class TestAuditViews(TacticalTestCase):
         self.check_authorized_superuser("patch", url, data)
 
         user = self.create_user_with_roles([])
-        self.client.force_authenticate(user=user)  # type: ignore
+        self.client.force_authenticate(user=user)
 
         # test user without role
         self.check_not_authorized("patch", url, data)
@@ -304,18 +308,18 @@ class TestAuditViews(TacticalTestCase):
         user.role.save()
 
         response = self.check_authorized("patch", url, data)
-        self.assertEqual(len(response.data["audit_logs"]), 86)  # type: ignore
+        self.assertEqual(len(response.data["audit_logs"]), 86)
 
         # limit user to client if agent check
         user.role.can_view_sites.set([site])
 
         response = self.check_authorized("patch", url, data)
-        self.assertEqual(len(response.data["audit_logs"]), 63)  # type: ignore
+        self.assertEqual(len(response.data["audit_logs"]), 63)
 
         # limit user to client if agent check
         user.role.can_view_clients.set([site.client])
         response = self.check_authorized("patch", url, data)
-        self.assertEqual(len(response.data["audit_logs"]), 63)  # type: ignore
+        self.assertEqual(len(response.data["audit_logs"]), 63)
 
     def test_debuglog_permissions(self):
 
@@ -324,24 +328,24 @@ class TestAuditViews(TacticalTestCase):
         agent2 = baker.make_recipe("agents.agent")
         baker.make(
             "logs.DebugLog",
-            log_level=cycle(["error", "info", "warning", "critical"]),
-            log_type="agent_issues",
+            log_level=cycle([i.value for i in DebugLogLevel]),
+            log_type=DebugLogType.AGENT_ISSUES,
             agent=agent,
             _quantity=4,
         )
 
         baker.make(
             "logs.DebugLog",
-            log_level=cycle(["error", "info", "warning", "critical"]),
-            log_type="agent_issues",
+            log_level=cycle([i.value for i in DebugLogLevel]),
+            log_type=DebugLogType.AGENT_ISSUES,
             agent=agent2,
             _quantity=8,
         )
 
         baker.make(
             "logs.DebugLog",
-            log_type="system_issues",
-            log_level=cycle(["error", "info", "warning", "critical"]),
+            log_type=DebugLogType.SYSTEM_ISSUES,
+            log_level=cycle([i.value for i in DebugLogLevel]),
             _quantity=15,
         )
 
@@ -354,7 +358,7 @@ class TestAuditViews(TacticalTestCase):
         )
 
         user = self.create_user_with_roles([])
-        self.client.force_authenticate(user=user)  # type: ignore
+        self.client.force_authenticate(user=user)
 
         # test user without role
         self.check_not_authorized("patch", url)
@@ -364,25 +368,25 @@ class TestAuditViews(TacticalTestCase):
         user.role.save()
 
         response = self.check_authorized("patch", url)
-        self.assertEqual(len(response.data), 27)  # type: ignore
+        self.assertEqual(len(response.data), 27)
 
         # limit user to site
         user.role.can_view_sites.set([agent.site])
 
         response = self.check_authorized("patch", url)
-        self.assertEqual(len(response.data), 19)  # type: ignore
+        self.assertEqual(len(response.data), 19)
 
         # limit user to client
         user.role.can_view_sites.clear()
         user.role.can_view_clients.set([agent2.site.client])
         response = self.check_authorized("patch", url)
-        self.assertEqual(len(response.data), 23)  # type: ignore
+        self.assertEqual(len(response.data), 23)
 
         # limit user to client and site
         user.role.can_view_sites.set([agent.site])
         user.role.can_view_clients.set([agent2.site.client])
         response = self.check_authorized("patch", url)
-        self.assertEqual(len(response.data), 27)  # type: ignore
+        self.assertEqual(len(response.data), 27)
 
     def test_get_pendingaction_permissions(self):
         agent = baker.make_recipe("agents.agent")
@@ -402,7 +406,7 @@ class TestAuditViews(TacticalTestCase):
         )
 
         user = self.create_user_with_roles([])
-        self.client.force_authenticate(user=user)  # type: ignore
+        self.client.force_authenticate(user=user)
 
         self.check_not_authorized("get", f"{base_url}/pendingactions/")
         self.check_not_authorized("get", f"/agents/{agent.agent_id}/pendingactions/")
@@ -415,13 +419,13 @@ class TestAuditViews(TacticalTestCase):
         user.role.save()
 
         r = self.check_authorized("get", f"{base_url}/pendingactions/")
-        self.assertEqual(len(r.data), 12)  # type: ignore
+        self.assertEqual(len(r.data), 12)
         r = self.check_authorized("get", f"/agents/{agent.agent_id}/pendingactions/")
-        self.assertEqual(len(r.data), 5)  # type: ignore
+        self.assertEqual(len(r.data), 5)
         r = self.check_authorized(
             "get", f"/agents/{unauthorized_agent.agent_id}/pendingactions/"
         )
-        self.assertEqual(len(r.data), 7)  # type: ignore
+        self.assertEqual(len(r.data), 7)
 
         # test limiting to client
         user.role.can_view_clients.set([agent.client])
@@ -432,7 +436,7 @@ class TestAuditViews(TacticalTestCase):
 
         # make sure queryset is limited too
         r = self.client.get(f"{base_url}/pendingactions/")
-        self.assertEqual(len(r.data), 5)  # type: ignore
+        self.assertEqual(len(r.data), 5)
 
     @patch("agents.models.Agent.nats_cmd", return_value="ok")
     @patch("logs.models.PendingAction.delete")
@@ -454,7 +458,7 @@ class TestAuditViews(TacticalTestCase):
         self.check_authorized_superuser("delete", unauthorized_url)
 
         user = self.create_user_with_roles([])
-        self.client.force_authenticate(user=user)  # type: ignore
+        self.client.force_authenticate(user=user)
 
         # test user without role
         self.check_not_authorized("delete", url)

@@ -2,18 +2,19 @@ import datetime as dt
 import re
 import uuid
 
-import pytz
-from agents.models import Agent
-from core.models import CoreSettings
+from django.db.models import Count, Exists, OuterRef, Prefetch, prefetch_related_objects
 from django.shortcuts import get_object_or_404
 from django.utils import timezone as djangotime
+from knox.models import AuthToken
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from agents.models import Agent
+from core.utils import get_core_settings
+from tacticalrmm.helpers import notify_error
 from tacticalrmm.permissions import _has_perm_on_client, _has_perm_on_site
-from tacticalrmm.utils import notify_error
 
 from .models import Client, ClientCustomField, Deployment, Site, SiteCustomField
 from .permissions import ClientsPerms, DeploymentPerms, SitesPerms
@@ -30,12 +31,42 @@ class GetAddClients(APIView):
     permission_classes = [IsAuthenticated, ClientsPerms]
 
     def get(self, request):
-        clients = Client.objects.select_related(
-            "workstation_policy", "server_policy", "alert_template"
-        ).filter_by_role(request.user)
-        return Response(
-            ClientSerializer(clients, context={"user": request.user}, many=True).data
+        clients = (
+            Client.objects.order_by("name")
+            .select_related("workstation_policy", "server_policy", "alert_template")
+            .filter_by_role(request.user)  # type: ignore
+            .prefetch_related(
+                Prefetch(
+                    "custom_fields",
+                    queryset=ClientCustomField.objects.select_related("field"),
+                ),
+                Prefetch(
+                    "sites",
+                    queryset=Site.objects.order_by("name")
+                    .select_related("client")
+                    .filter_by_role(request.user)
+                    .prefetch_related("custom_fields__field")
+                    .annotate(
+                        maintenance_mode=Exists(
+                            Agent.objects.filter(
+                                site=OuterRef("pk"), maintenance_mode=True
+                            )
+                        )
+                    )
+                    .annotate(agent_count=Count("agents")),
+                    to_attr="filtered_sites",
+                ),
+            )
+            .annotate(
+                maintenance_mode=Exists(
+                    Agent.objects.filter(
+                        site__client=OuterRef("pk"), maintenance_mode=True
+                    )
+                )
+            )
+            .annotate(agent_count=Count("sites__agents"))
         )
+        return Response(ClientSerializer(clients, many=True).data)
 
     def post(self, request):
         # create client
@@ -57,7 +88,7 @@ class GetAddClients(APIView):
             site_serializer.is_valid(raise_exception=True)
 
         if "initialsetup" in request.data.keys():
-            core = CoreSettings.objects.first()
+            core = get_core_settings()
             core.default_time_zone = request.data["timezone"]
             core.save(update_fields=["default_time_zone"])
 
@@ -84,7 +115,25 @@ class GetUpdateDeleteClient(APIView):
 
     def get(self, request, pk):
         client = get_object_or_404(Client, pk=pk)
-        return Response(ClientSerializer(client, context={"user": request.user}).data)
+
+        prefetch_related_objects(
+            [client],
+            Prefetch(
+                "sites",
+                queryset=Site.objects.order_by("name")
+                .select_related("client")
+                .filter_by_role(request.user)
+                .prefetch_related("custom_fields__field")
+                .annotate(
+                    maintenance_mode=Exists(
+                        Agent.objects.filter(site=OuterRef("pk"), maintenance_mode=True)
+                    )
+                )
+                .annotate(agent_count=Count("agents")),
+                to_attr="filtered_sites",
+            ),
+        )
+        return Response(ClientSerializer(client).data)
 
     def put(self, request, pk):
         client = get_object_or_404(Client, pk=pk)
@@ -119,8 +168,6 @@ class GetUpdateDeleteClient(APIView):
         return Response("{client} was updated")
 
     def delete(self, request, pk):
-        from automation.tasks import generate_agent_checks_task
-
         client = get_object_or_404(Client, pk=pk)
         agent_count = client.live_agent_count
 
@@ -129,7 +176,6 @@ class GetUpdateDeleteClient(APIView):
             agents = Agent.objects.filter(site__client=client)
             site = get_object_or_404(Site, pk=request.query_params["move_to_site"])
             agents.update(site=site)
-            generate_agent_checks_task.delay(all=True, create_tasks=True)
 
         elif agent_count > 0:
             return notify_error(
@@ -144,7 +190,7 @@ class GetAddSites(APIView):
     permission_classes = [IsAuthenticated, SitesPerms]
 
     def get(self, request):
-        sites = Site.objects.filter_by_role(request.user)
+        sites = Site.objects.filter_by_role(request.user)  # type: ignore
         return Response(SiteSerializer(sites, many=True).data)
 
     def post(self, request):
@@ -220,8 +266,6 @@ class GetUpdateDeleteSite(APIView):
         return Response("Site was edited")
 
     def delete(self, request, pk):
-        from automation.tasks import generate_agent_checks_task
-
         site = get_object_or_404(Site, pk=pk)
         if site.client.sites.count() == 1:
             return notify_error("A client must have at least 1 site.")
@@ -232,7 +276,6 @@ class GetUpdateDeleteSite(APIView):
             agents = Agent.objects.filter(site=site)
             new_site = get_object_or_404(Site, pk=request.query_params["move_to_site"])
             agents.update(site=new_site)
-            generate_agent_checks_task.delay(all=True, create_tasks=True)
 
         elif agent_count > 0:
             return notify_error(
@@ -247,12 +290,11 @@ class AgentDeployment(APIView):
     permission_classes = [IsAuthenticated, DeploymentPerms]
 
     def get(self, request):
-        deps = Deployment.objects.filter_by_role(request.user)
+        deps = Deployment.objects.filter_by_role(request.user)  # type: ignore
         return Response(DeploymentSerializer(deps, many=True).data)
 
     def post(self, request):
         from accounts.models import User
-        from knox.models import AuthToken
 
         site = get_object_or_404(Site, pk=request.data["site"])
 
@@ -261,12 +303,17 @@ class AgentDeployment(APIView):
 
         installer_user = User.objects.filter(is_installer_user=True).first()
 
-        expires = dt.datetime.strptime(
-            request.data["expires"], "%Y-%m-%d %H:%M"
-        ).astimezone(pytz.timezone("UTC"))
-        now = djangotime.now()
-        delta = expires - now
-        obj, token = AuthToken.objects.create(user=installer_user, expiry=delta)
+        try:
+            expires = dt.datetime.strptime(
+                request.data["expires"], "%Y-%m-%dT%H:%M:%S%z"
+            )
+
+        except Exception:
+            return notify_error("expire date is invalid")
+
+        obj, token = AuthToken.objects.create(
+            user=installer_user, expiry=expires - djangotime.now()
+        )
 
         flags = {
             "power": request.data["power"],
@@ -278,7 +325,7 @@ class AgentDeployment(APIView):
             site=site,
             expiry=expires,
             mon_type=request.data["agenttype"],
-            arch=request.data["arch"],
+            goarch=request.data["goarch"],
             auth_token=obj,
             token_key=token,
             install_flags=flags,
@@ -318,8 +365,7 @@ class GenerateAgent(APIView):
         site = d.site.name.replace(" ", "").lower()
         client = re.sub(r"([^a-zA-Z0-9]+)", "", client)
         site = re.sub(r"([^a-zA-Z0-9]+)", "", site)
-        ext = ".exe" if d.arch == "64" else "-x86.exe"
-        file_name = f"rmm-{client}-{site}-{d.mon_type}{ext}"
+        file_name = f"trmm-{client}-{site}-{d.mon_type}-{d.goarch}.exe"
 
         return generate_winagent_exe(
             client=d.client.pk,
@@ -328,7 +374,7 @@ class GenerateAgent(APIView):
             rdp=d.install_flags["rdp"],
             ping=d.install_flags["ping"],
             power=d.install_flags["power"],
-            arch=d.arch,
+            goarch=d.goarch,
             token=d.token_key,
             api=f"https://{request.get_host()}",
             file_name=file_name,

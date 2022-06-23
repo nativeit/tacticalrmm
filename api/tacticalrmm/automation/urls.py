@@ -1,6 +1,7 @@
+from django.urls import path
+
 from autotasks.views import GetAddAutoTasks
 from checks.views import GetAddChecks
-from django.urls import path
 
 from . import views
 
@@ -9,7 +10,6 @@ urlpatterns = [
     path("policies/<int:pk>/related/", views.GetRelated.as_view()),
     path("policies/overview/", views.OverviewPolicy.as_view()),
     path("policies/<int:pk>/", views.GetUpdateDeletePolicy.as_view()),
-    path("sync/", views.PolicySync.as_view()),
     # alias to get policy checks
     path("policies/<int:policy>/checks/", GetAddChecks.as_view()),
     # alias to get policy tasks

@@ -1,20 +1,19 @@
 import base64
-import datetime as dt
+
+from django.core.management.base import BaseCommand
 
 from accounts.models import User
 from agents.models import Agent
 from autotasks.models import AutomatedTask
-from django.core.management.base import BaseCommand
-from django.utils.timezone import make_aware
+from checks.models import Check, CheckHistory
 from scripts.models import Script
-
-from tacticalrmm.constants import AGENT_DEFER
+from tacticalrmm.constants import AGENT_DEFER, ScriptType
 
 
 class Command(BaseCommand):
     help = "Collection of tasks to run after updating the rmm, after migrations"
 
-    def handle(self, *args, **kwargs):
+    def handle(self, *args, **kwargs) -> None:
         self.stdout.write("Running post update tasks")
 
         # load community scripts into the db
@@ -27,7 +26,7 @@ class Command(BaseCommand):
                 user.save()
 
         # convert script base64 field to text field
-        user_scripts = Script.objects.exclude(script_type="builtin").filter(
+        user_scripts = Script.objects.exclude(script_type=ScriptType.BUILT_IN).filter(
             script_body=""
         )
         for script in user_scripts:
@@ -38,37 +37,10 @@ class Command(BaseCommand):
             # script.hash_script_body()  # also saves script
             script.save(update_fields=["script_body"])
 
-        # convert autotask to the new format
-        for task in AutomatedTask.objects.all():
-            try:
-                edited = False
-
-                # convert scheduled task_type
-                if task.task_type == "scheduled":
-                    task.task_type = "daily"
-                    task.run_time_date = make_aware(
-                        dt.datetime.strptime(task.run_time_minute, "%H:%M")
-                    )
-                    task.daily_interval = 1
-                    edited = True
-
-                # convert actions
-                if not task.actions:
-                    task.actions = [
-                        {
-                            "type": "script",
-                            "script": task.script.pk,
-                            "script_args": task.script_args,
-                            "timeout": task.timeout,
-                            "name": task.script.name,
-                        }
-                    ]
-                    edited = True
-
-                if edited:
-                    task.save()
-            except:
-                continue
+        # Remove policy checks and tasks on agents and check
+        AutomatedTask.objects.filter(managed_by_policy=True).delete()
+        Check.objects.filter(managed_by_policy=True).delete()
+        CheckHistory.objects.filter(agent_id=None).delete()
 
         # set goarch for older windows agents
         for agent in Agent.objects.defer(*AGENT_DEFER):
