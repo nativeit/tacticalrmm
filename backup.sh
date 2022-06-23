@@ -19,6 +19,8 @@ if [ "${SCRIPT_VERSION}" -ne "${NEW_VER}" ]; then
     wget -q "${SCRIPT_URL}" -O backup.sh
     exec ${THIS_SCRIPT}
 fi
+printf >&2 "${YELLOW}Using script v.${SCRIPT_VERSION}.${NC}\n"
+pause 10
 
 rm -f $TMP_FILE
 
