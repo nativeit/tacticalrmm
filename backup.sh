@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 SCRIPT_VERSION="19"
-SCRIPT_URL='https://raw.githubusercontent.com/nativeit/tacticalrmm/master/backup.sh'
+SCRIPT_URL='https://github.com/nativeit/tacticalrmm/blob/1c5bb40f15e502c4a205dcd1a1ab0f00667a142b/backup.sh'
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
